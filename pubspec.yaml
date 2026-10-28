@@ -1,0 +1,37 @@
+name: fasy
+description: "fasy – Tag & Migräne erfassen"
+publish_to: "none"
+version: 0.2.0
+
+environment:
+  sdk: ^3.13.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # Datenbank: drift statt sqflite (läuft nativ UND im Web/WASM)
+  drift: ^2.35.3
+  # sqlite3 ab 3.x: bündelt die native SQLite-Lib automatisch per Hooks.
+  # (sqlite3_flutter_libs ist EOL und wird absichtlich NICHT mehr verwendet.)
+  sqlite3: ^3.8.0
+  # Browser-APIs für den Download im Web-Pfad (kein dart:io im Web nötig)
+  web: ^1.1.2
+  path: ^1.9.0
+  # Achtung: path_provider nur in nativen Dateien verwenden (Web-frei halten!)
+  path_provider: ^2.1.3
+  share_plus: ^13.3.1
+  file_saver: ^0.7.0
+  intl: ^0.19.0
+  file_picker: ^13.3.0
+  # bewusst auf 0.10.x gepinnt – deine nativen Widget-Receiver laufen damit
+  home_widget: ^0.10.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  drift_dev: ^2.35.2
+  build_runner: ^2.4.13
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
