@@ -1,15 +1,23 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
-import 'package:file_saver/file_saver.dart';
+import 'package:drift/drift.dart';
 import 'package:intl/intl.dart';
-import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
-import 'package:share_plus/share_plus.dart';
-import 'package:sqflite/sqflite.dart';
 
+import 'database.dart';
 import 'models.dart';
+import 'platform/files.dart';
+
+// ============================================================================
+// fasy-Datenzugriff – jetzt auf drift (gleiche API wie zuvor unter sqflite).
+//
+// Daten-Garantien:
+//  * Datei phaska.db bleibt unter Android am alten Ort (siehe connection/).
+//  * Tabellen/Spalten byteidentisch (database.dart, rohe SQL-Migrationen).
+//  * user_version 4 → 5 als No-Op → S23-Bestand läuft per App-Update weiter.
+//  * Alle fachlichen Regeln (migraene_tag > 2, _qw-Marker, Aggregat-Logik,
+//    CSV-Import) sind 1:1 übernommen.
+// ============================================================================
 
 /// Tages-Aggregat einer Einzelerfassung (Ø, Min, Max, Anzahl).
 typedef QuickAgg = ({double avg, double min, double max, int n});
@@ -76,111 +84,165 @@ double? entryBaseValue(
 class PhaskaDb {
   PhaskaDb._();
   static final PhaskaDb instance = PhaskaDb._();
+
+  /// Weiterhin vorhanden (Kompatibilität) – die Tabelle heißt unverändert so.
   static const table = 'entries';
-  Database? _db;
 
-  Future<Database> get database async {
-    if (_db != null) return _db!;
-    final path = p.join(await getDatabasesPath(), 'phaska.db');
-    _db = await openDatabase(path, version: 4, onCreate: (db, v) async {
-      await _createEntries(db);
-      await _createExtras(db);
-      await _createQuick(db);
-    }, onUpgrade: (db, oldV, newV) async {
-      if (oldV < 2) {
-        await db.execute(
-            'ALTER TABLE $table ADD COLUMN medikinet_essen_abstand TEXT');
-        await db
-            .execute('ALTER TABLE $table ADD COLUMN custom_values TEXT');
-        await _createExtras(db);
-      }
-      if (oldV < 3) {
-        await _createGraphen(db);
-      }
-      if (oldV < 4) {
-        await _createQuick(db);
-      }
-    });
-    return _db!;
+  FasyDatabase? _db;
+
+  Future<FasyDatabase> get database async => _db ??= FasyDatabase();
+
+  // ---------- Mapping: Modelle ↔ drift-Zeilen ----------
+
+  EntriesCompanion _entryToCompanion(PhaskaEntry e) => EntriesCompanion(
+        id: e.id == null ? const Value.absent() : Value(e.id!),
+        createdAt: Value(e.createdAt.toIso8601String()),
+        wohlbefinden: Value(e.wohlbefinden),
+        schlafStunden: Value(e.schlafStunden),
+        elvanseMg: Value(e.elvanseMg),
+        innereUnruhe: Value(e.innereUnruhe),
+        medikinetMg: Value(e.medikinetMg),
+        medikinetZeit: Value(e.medikinetZeit),
+        medikinetMagen: Value(e.medikinetMagen),
+        medikinetEssenAbstand: Value(e.medikinetEssenAbstand),
+        migraeneIntensitaet: Value(e.migraeneIntensitaet),
+        migraeneStart: Value(e.migraeneStart),
+        migraeneEnde: Value(e.migraeneEnde),
+        ausloeser: Value(e.ausloeser),
+        begleitsymptome: Value(e.begleitsymptome),
+        notizen: Value(e.notizen),
+        migraeneTag: Value(e.migraeneTag),
+        customValues: Value(jsonEncode(e.custom)),
+      );
+
+  PhaskaEntry _entryFromRow(EntryRow r) => PhaskaEntry.fromMap({
+        'id': r.id,
+        'created_at': r.createdAt,
+        'wohlbefinden': r.wohlbefinden,
+        'schlaf_stunden': r.schlafStunden,
+        'elvanse_mg': r.elvanseMg,
+        'innere_unruhe': r.innereUnruhe,
+        'medikinet_mg': r.medikinetMg,
+        'medikinet_zeit': r.medikinetZeit,
+        'medikinet_magen': r.medikinetMagen,
+        'medikinet_essen_abstand': r.medikinetEssenAbstand,
+        'migraene_intensitaet': r.migraeneIntensitaet,
+        'migraene_start': r.migraeneStart,
+        'migraene_ende': r.migraeneEnde,
+        'ausloeser': r.ausloeser,
+        'begleitsymptome': r.begleitsymptome,
+        'notizen': r.notizen,
+        'custom_values': r.customValues,
+      });
+
+  FieldDefsCompanion _fieldDefToCompanion(FieldDef d) {
+    final m = d.toMap();
+    return FieldDefsCompanion(
+      id: Value(m['id'] as String),
+      grp: Value(m['grp'] as int),
+      label: Value(m['label'] as String),
+      type: Value(m['type'] as String),
+      config: Value(m['config'] as String?),
+      position: Value(m['position'] as int?),
+    );
   }
 
-  Future<void> _createEntries(Database db) => db.execute('''
-      CREATE TABLE $table (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        created_at TEXT NOT NULL,
-        wohlbefinden INTEGER,
-        schlaf_stunden REAL,
-        elvanse_mg INTEGER,
-        innere_unruhe REAL,
-        medikinet_mg INTEGER,
-        medikinet_zeit TEXT,
-        medikinet_magen TEXT,
-        medikinet_essen_abstand TEXT,
-        migraene_intensitaet INTEGER,
-        migraene_start TEXT,
-        migraene_ende TEXT,
-        ausloeser TEXT,
-        begleitsymptome TEXT,
-        notizen TEXT,
-        migraene_tag TEXT NOT NULL DEFAULT 'nein',
-        custom_values TEXT
-      )''');
+  FieldDef _fieldDefFromRow(FieldDefRow r) => FieldDef.fromMap({
+        'id': r.id,
+        'grp': r.grp,
+        'label': r.label,
+        'type': r.type,
+        'config': r.config,
+        'position': r.position,
+      });
 
-  Future<void> _createExtras(Database db) async {
-    await db.execute(
-        'CREATE TABLE IF NOT EXISTS field_defs (id TEXT PRIMARY KEY, grp INTEGER NOT NULL, label TEXT NOT NULL, type TEXT NOT NULL, config TEXT, position INTEGER)');
-    await db.execute(
-        'CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)');
-    await _createGraphen(db);
+  GraphDefsCompanion _graphToCompanion(GraphDef g) {
+    final m = g.toMap();
+    return GraphDefsCompanion(
+      id: Value(m['id'] as String),
+      title: Value(m['title'] as String),
+      cfg: Value(m['cfg'] as String),
+      position: Value(m['position'] as int?),
+    );
   }
 
-  Future<void> _createGraphen(Database db) => db.execute(
-      'CREATE TABLE IF NOT EXISTS graph_defs (id TEXT PRIMARY KEY, title TEXT NOT NULL, cfg TEXT NOT NULL, position INTEGER)');
+  GraphDef _graphFromRow(GraphDefRow r) => GraphDef.fromMap({
+        'id': r.id,
+        'title': r.title,
+        'cfg': r.cfg,
+        'position': r.position,
+      });
 
-  Future<void> _createQuick(Database db) => db.execute('''
-      CREATE TABLE IF NOT EXISTS quick_values (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        def_key TEXT NOT NULL,
-        label TEXT NOT NULL,
-        value REAL NOT NULL,
-        created_at TEXT NOT NULL
-      )''');
+  QuickValuesCompanion _quickToCompanion(QuickValue q) => QuickValuesCompanion(
+        id: q.id == null ? const Value.absent() : Value(q.id!),
+        defKey: Value(q.defKey),
+        label: Value(q.label),
+        value: Value(q.value),
+        createdAt: Value(q.createdAt.toIso8601String()),
+      );
+
+  QuickValue _quickFromRow(QuickValueRow r) => QuickValue.fromMap({
+        'id': r.id,
+        'def_key': r.defKey,
+        'label': r.label,
+        'value': r.value,
+        'created_at': r.createdAt,
+      });
 
   // ---------- Einträge ----------
 
+  /// Direktes Einfügen OHNE Repo-Bump/Autosave (für den CSV-Import,
+  /// der am Ende einmal gesammelt meldet).
+  Future<int> insertRaw(PhaskaEntry e) async {
+    final db = await database;
+    return db.into(db.entries).insert(_entryToCompanion(e));
+  }
+
   Future<int> insert(PhaskaEntry e) async {
-    final id = await (await database).insert(table, e.toMap());
+    final id = await insertRaw(e);
     Repo.bump();
     unawaited(autosave());
     return id;
   }
 
   Future<void> update(PhaskaEntry e) async {
-    await (await database)
-        .update(table, e.toMap(), where: 'id = ?', whereArgs: [e.id]);
+    final db = await database;
+    await (db.update(db.entries)..where((t) => t.id.equals(e.id ?? -1)))
+        .write(_entryToCompanion(e));
     Repo.bump();
     unawaited(autosave());
   }
 
   Future<void> delete(int id) async {
-    await (await database).delete(table, where: 'id = ?', whereArgs: [id]);
+    final db = await database;
+    await (db.delete(db.entries)..where((t) => t.id.equals(id))).go();
     Repo.bump();
     unawaited(autosave());
   }
 
   Future<List<PhaskaEntry>> all() async {
-    final rows =
-        await (await database).query(table, orderBy: 'created_at DESC');
-    return rows.map(PhaskaEntry.fromMap).toList();
+    final db = await database;
+    final rows = await (db.select(db.entries)
+          ..orderBy([(t) => OrderingTerm.desc(t.createdAt)]))
+        .get();
+    return [for (final r in rows) _entryFromRow(r)];
   }
 
   Future<List<String>> pastValues(String column) async {
     assert(column == 'ausloeser' || column == 'begleitsymptome');
-    final rows = await (await database).query(table,
-        columns: [column], where: "$column IS NOT NULL AND $column != ''");
+    final db = await database;
+    final GeneratedColumn<String> col = column == 'ausloeser'
+        ? db.entries.ausloeser
+        : db.entries.begleitsymptome;
+    final rows = await (db.selectOnly(db.entries)
+          ..addColumns([col])
+          ..where(col.isNotNull()))
+        .get();
     final found = <String>{};
-    for (final r in rows) {
-      for (final part in (r[column] as String).split(';')) {
+    for (final row in rows) {
+      final raw = row.read(col);
+      if (raw == null || raw.isEmpty) continue;
+      for (final part in raw.split(';')) {
         final t = part.trim();
         if (t.isNotEmpty) found.add(t);
       }
@@ -192,36 +254,45 @@ class PhaskaDb {
   // ---------- Eigene Datenpunkte & Reihenfolge ----------
 
   Future<List<FieldDef>> fieldDefs({int? group}) async {
-    final rows = await (await database).query('field_defs',
-        where: group == null ? null : 'grp = ?',
-        whereArgs: group == null ? null : [group],
-        orderBy: 'position');
-    return rows.map(FieldDef.fromMap).toList();
+    final db = await database;
+    final q = db.select(db.fieldDefs)
+      ..orderBy([(t) => OrderingTerm.asc(t.position)]);
+    if (group != null) {
+      q.where((t) => t.grp.equals(group));
+    }
+    final rows = await q.get();
+    return [for (final r in rows) _fieldDefFromRow(r)];
   }
 
   Future<void> saveFieldDef(FieldDef d) async {
-    await (await database).insert('field_defs', d.toMap(),
-        conflictAlgorithm: ConflictAlgorithm.replace);
+    final db = await database;
+    await db
+        .into(db.fieldDefs)
+        .insert(_fieldDefToCompanion(d), mode: InsertMode.replace);
     Repo.bump();
   }
 
   Future<void> deleteFieldDef(String id) async {
-    await (await database)
-        .delete('field_defs', where: 'id = ?', whereArgs: [id]);
+    final db = await database;
+    await (db.delete(db.fieldDefs)..where((t) => t.id.equals(id))).go();
     Repo.bump();
   }
 
   // ---------- Meta ----------
 
   Future<String?> _meta(String key) async {
-    final r = await (await database)
-        .query('meta', where: 'key = ?', whereArgs: [key]);
-    return r.isEmpty ? null : r.first['value'] as String?;
+    final db = await database;
+    final rows =
+        await (db.select(db.meta)..where((t) => t.key.equals(key))).get();
+    return rows.isEmpty ? null : rows.first.value;
   }
 
-  Future<void> _setMeta(String key, String value) async =>
-      (await database).insert('meta', {'key': key, 'value': value},
-          conflictAlgorithm: ConflictAlgorithm.replace);
+  Future<void> _setMeta(String key, String value) async {
+    final db = await database;
+    await db.into(db.meta).insert(
+        MetaCompanion(key: Value(key), value: Value(value)),
+        mode: InsertMode.replace);
+  }
 
   Future<List<String>?> stepOrder(int group) async {
     final v = await _meta('order_g$group');
@@ -278,20 +349,24 @@ class PhaskaDb {
   // ---------- Graphen ----------
 
   Future<List<GraphDef>> graphDefs() async {
-    final rows =
-        await (await database).query('graph_defs', orderBy: 'position');
-    return rows.map(GraphDef.fromMap).toList();
+    final db = await database;
+    final rows = await (db.select(db.graphDefs)
+          ..orderBy([(t) => OrderingTerm.asc(t.position)]))
+        .get();
+    return [for (final r in rows) _graphFromRow(r)];
   }
 
   Future<void> saveGraphDef(GraphDef g, {bool notify = true}) async {
-    await (await database).insert('graph_defs', g.toMap(),
-        conflictAlgorithm: ConflictAlgorithm.replace);
+    final db = await database;
+    await db
+        .into(db.graphDefs)
+        .insert(_graphToCompanion(g), mode: InsertMode.replace);
     if (notify) Repo.bump();
   }
 
   Future<void> deleteGraphDef(String id) async {
-    await (await database)
-        .delete('graph_defs', where: 'id = ?', whereArgs: [id]);
+    final db = await database;
+    await (db.delete(db.graphDefs)..where((t) => t.id.equals(id))).go();
     Repo.bump();
   }
 
@@ -302,7 +377,8 @@ class PhaskaDb {
   // ---------- Einzelerfassung (Schnellmessungen) ----------
 
   Future<int> insertQuick(QuickValue q) async {
-    final id = await (await database).insert('quick_values', q.toMap());
+    final db = await database;
+    final id = await db.into(db.quickValues).insert(_quickToCompanion(q));
     await applyQuickAggregate(q.defKey, q.createdAt);
     Repo.bump();
     unawaited(autosave());
@@ -310,25 +386,29 @@ class PhaskaDb {
   }
 
   Future<void> updateQuick(QuickValue q) async {
-    await (await database).update('quick_values', q.toMap(),
-        where: 'id = ?', whereArgs: [q.id]);
+    final db = await database;
+    await (db.update(db.quickValues)..where((t) => t.id.equals(q.id ?? -1)))
+        .write(_quickToCompanion(q));
     await applyQuickAggregate(q.defKey, q.createdAt);
     Repo.bump();
     unawaited(autosave());
   }
 
   Future<void> deleteQuick(QuickValue q) async {
-    await (await database)
-        .delete('quick_values', where: 'id = ?', whereArgs: [q.id]);
+    final db = await database;
+    await (db.delete(db.quickValues)..where((t) => t.id.equals(q.id ?? -1)))
+        .go();
     await applyQuickAggregate(q.defKey, q.createdAt);
     Repo.bump();
     unawaited(autosave());
   }
 
   Future<List<QuickValue>> allQuick() async {
-    final rows = await (await database)
-        .query('quick_values', orderBy: 'created_at DESC');
-    return rows.map(QuickValue.fromMap).toList();
+    final db = await database;
+    final rows = await (db.select(db.quickValues)
+          ..orderBy([(t) => OrderingTerm.desc(t.createdAt)]))
+        .get();
+    return [for (final r in rows) _quickFromRow(r)];
   }
 
   Future<List<String>> quickKeys() async {
@@ -665,7 +745,9 @@ List<String> csvRow(PhaskaEntry e, List<FieldDef> defs,
 String _customCsv(Object? v) =>
     v == null ? '' : (v is double ? v.toStringAsFixed(1) : '$v');
 
-Future<File> buildCsvFile(
+/// Baut den kompletten CSV-Text (Semikolon, jamovi-Format) im Speicher.
+/// Plattformunabhängig – das Rauschreiben übernimmt das FilesGateway.
+Future<String> buildCsvContent(
     List<PhaskaEntry> entries, List<FieldDef> defs) async {
   final keys = await PhaskaDb.instance.quickKeys();
   final agg = keys.isEmpty
@@ -675,44 +757,36 @@ Future<File> buildCsvFile(
   for (final e in entries) {
     b.writeln(csvRow(e, defs, keys, agg).join(';'));
   }
-  final dir = await getApplicationDocumentsDirectory();
-  final stamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
-  final file = File(p.join(dir.path, 'fasy_export_$stamp.csv'));
-  await file.writeAsString(b.toString());
-  return file;
+  return b.toString();
 }
 
 Future<void> shareCsv(List<PhaskaEntry> entries, List<FieldDef> defs) async {
-  final file = await buildCsvFile(entries, defs);
-  await SharePlus.instance.share(
-    ShareParams(
-      files: [XFile(file.path)],
-      text: 'fasy Export (CSV für jamovi)',
-    ),
+  final content = await buildCsvContent(entries, defs);
+  final stamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
+  await filesGateway.share(
+    'fasy_export_$stamp.csv',
+    utf8.encode(content),
+    mime: 'text/csv',
+    text: 'fasy Export (CSV für jamovi)',
   );
 }
 
-/// Speichert die CSV direkt im Download-Ordner des Telefons.
+/// Speichert die CSV dauerhaft (nativ: Download-Ordner; Web: Browser-Download).
 Future<String?> saveCsvLocally(
     List<PhaskaEntry> entries, List<FieldDef> defs) async {
-  final file = await buildCsvFile(entries, defs);
-  final bytes = await file.readAsBytes();
+  final content = await buildCsvContent(entries, defs);
   final stamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
-  return FileSaver.instance.saveFile(
-    name: 'fasy_export_$stamp',
-    bytes: bytes,
-    fileExtension: 'csv',
-    mimeType: MimeType.other,
-    customMimeType: 'text/csv',
-  );
+  return filesGateway.saveLocally(
+      'fasy_export_$stamp.csv', utf8.encode(content), 'text/csv');
 }
 
 // ---------------- Autosave (Punkt 6) ----------------
 
 bool _autosaveRunning = false;
 
-/// Schreibt nach jeder Änderung zeitgestempelte Exporte in den
-/// App-internen Ordner „autosave". Alte Dateien bleiben erhalten.
+/// Schreibt nach jeder Änderung zeitgestempelte Exporte.
+/// Nativ: App-interner Ordner „autosave" (wie bisher).
+/// Web: No-Op (Persistenz liegt in der Browser-Datenbank).
 Future<void> autosave() async {
   if (_autosaveRunning) return;
   _autosaveRunning = true;
@@ -725,16 +799,13 @@ Future<void> autosave() async {
         ? const <String, Map<String, QuickAgg>>{}
         : await PhaskaDb.instance.quickDayAgg();
     final stamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
-    final dir = Directory(p.join(
-        (await getApplicationDocumentsDirectory()).path, 'autosave'));
-    await dir.create(recursive: true);
 
     final b = StringBuffer()..writeln(csvHeaders(defs, keys).join(';'));
     for (final e in entries) {
       b.writeln(csvRow(e, defs, keys, agg).join(';'));
     }
-    await File(p.join(dir.path, 'fasy_autosave_$stamp.csv'))
-        .writeAsString(b.toString());
+    await filesGateway.autosave(
+        'fasy_autosave_$stamp.csv', utf8.encode(b.toString()));
 
     final qs = await PhaskaDb.instance.allQuick();
     if (qs.isNotEmpty) {
@@ -744,8 +815,8 @@ Future<void> autosave() async {
             '${DateFormat('dd.MM.yyyy HH:mm').format(q.createdAt)};'
             '${_csvCell(q.label)};${q.value.toStringAsFixed(1)}');
       }
-      await File(p.join(dir.path, 'fasy_einzel_$stamp.csv'))
-          .writeAsString(qb.toString());
+      await filesGateway.autosave(
+          'fasy_einzel_$stamp.csv', utf8.encode(qb.toString()));
     }
   } catch (_) {
     // Autosave darf die App nie abstürzen lassen.
@@ -960,7 +1031,6 @@ Future<(int, int, List<String>)> importCsv(
   }
 
   var imported = 0, skipped = 0;
-  final db = await PhaskaDb.instance.database;
   for (var r = 1; r < rows.length; r++) {
     final row = rows[r];
     if (row.every((c) => c.trim().isEmpty)) continue;
@@ -990,7 +1060,7 @@ Future<(int, int, List<String>)> importCsv(
       continue;
     }
     stamps.add(stamp);
-    await db.insert(PhaskaDb.table, e.toMap());
+    await PhaskaDb.instance.insertRaw(e);
     imported++;
   }
   if (imported > 0) {

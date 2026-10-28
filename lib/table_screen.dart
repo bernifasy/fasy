@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
@@ -326,7 +325,7 @@ class _TableScreenState extends State<TableScreen> {
           ),
         ]),
       ),
-            floatingActionButton: Row(mainAxisSize: MainAxisSize.min, children: [
+      floatingActionButton: Row(mainAxisSize: MainAxisSize.min, children: [
         FloatingActionButton.small(
           heroTag: 'import',
           tooltip: 'CSV importieren',
@@ -336,12 +335,12 @@ class _TableScreenState extends State<TableScreen> {
         const SizedBox(width: 12),
         FloatingActionButton.small(
           heroTag: 'save_local',
-          tooltip: 'Im Download-Ordner speichern',
+          tooltip: 'Lokal speichern (Download-Ordner)',
           onPressed: _busy
               ? null
               : () => _run(
                     () => saveCsvLocally(_entries!, _defs),
-                    (path) => 'Gespeichert (Download-Ordner):\n$path',
+                    (path) => 'Gespeichert:\n$path',
                   ),
           child: const Icon(Icons.save_alt_rounded),
         ),

@@ -1,14 +1,13 @@
-import 'dart:io';
 import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
-import 'package:file_saver/file_saver.dart';
 import 'package:flutter/material.dart';
 
 import 'capture/steps.dart';
 import 'db.dart';
 import 'models.dart';
 import 'painters.dart';
+import 'platform/files.dart';
 
 const fieldTypeLabels = <String, String>{
   'vslider': 'Vertikaler Slider (1–100)',
@@ -181,7 +180,8 @@ class _EditSchemaScreenState extends State<EditSchemaScreen> {
           ListTile(
             leading: const Icon(Icons.save_alt_rounded),
             title: const Text('Konfiguration speichern'),
-            subtitle: const Text('„fasyconfig.json" in den Dokumente-Ordner'),
+            subtitle:
+                const Text('„fasyconfig.json“ (Download- bzw. Dokumente-Ordner)'),
             onTap: () {
               Navigator.pop(ctx);
               _saveConfig();
@@ -206,15 +206,10 @@ class _EditSchemaScreenState extends State<EditSchemaScreen> {
     try {
       final json = await PhaskaDb.instance
           .exportConfigJson(_ids[1] ?? const [], _ids[2] ?? const []);
-      final path = await FileSaver.instance.saveFile(
-        name: 'fasyconfig',
-        bytes: utf8.encode(json),
-        fileExtension: 'json',
-        mimeType: MimeType.other,
-        customMimeType: 'application/json',
-      );
-      messenger.showSnackBar(SnackBar(
-          content: Text('Konfiguration gespeichert (Dokumente):\n$path')));
+      final result = await filesGateway.saveLocally(
+          'fasyconfig.json', utf8.encode(json), 'application/json');
+      messenger.showSnackBar(
+          SnackBar(content: Text('Konfiguration gespeichert:\n$result')));
     } catch (e) {
       messenger.showSnackBar(
           SnackBar(content: Text('Speichern fehlgeschlagen: $e')));
