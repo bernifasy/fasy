@@ -1,0 +1,57 @@
+name: deploy
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Abhängigkeiten
+        run: flutter pub get
+
+      - name: drift-Code generieren
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: drift-Web-Assets holen
+        run: |
+          cd web
+          curl -L -o sqlite3.wasm https://github.com/simolus3/drift/releases/download/drift-2.35.3/sqlite3.wasm
+          curl -L -o drift_worker.dart.js https://github.com/simolus3/drift/releases/download/drift-2.35.3/drift_worker.js
+
+      - name: Web-Build (PWA, base-href /fasy/)
+        run: flutter build web --release --base-href /fasy/
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
