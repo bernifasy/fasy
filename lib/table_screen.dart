@@ -18,15 +18,24 @@ class TableScreen extends StatefulWidget {
   State<TableScreen> createState() => _TableScreenState();
 }
 
-class _TableScreenState extends State<TableScreen> {
+class _TableScreenState extends State<TableScreen>
+    with AutomaticKeepAliveClientMixin {
   List<PhaskaEntry>? _entries;
   List<FieldDef> _defs = const [];
   List<String> _quickKeys = const [];
   Map<String, Map<String, QuickAgg>> _agg = const {};
+  List<({String label, int? group})> _cols = const [];
   bool _busy = false;
+  bool _loading = false;
 
   /// Punkt 3: nur diese Leiste scrollt die Tabelle horizontal.
   final _hCtrl = ScrollController();
+
+  /// Performance: Der Slide bleibt beim Wischen im Speicher – keine
+  /// Zerstörung + kein DB-Neuladen mehr beim Zurückkehren (aktualisiert
+  /// wird ohnehin über Repo.changes).
+  @override
+  bool get wantKeepAlive => true;
 
   @override
   void initState() {
@@ -43,19 +52,32 @@ class _TableScreenState extends State<TableScreen> {
   }
 
   Future<void> _load() async {
-    final e = await PhaskaDb.instance.all();
-    final d = await PhaskaDb.instance.fieldDefs();
-    final k = await PhaskaDb.instance.quickKeys();
-    final a = k.isEmpty
-        ? const <String, Map<String, QuickAgg>>{}
-        : await PhaskaDb.instance.quickDayAgg();
-    if (mounted) {
-      setState(() {
-        _entries = e;
-        _defs = d;
-        _quickKeys = k;
-        _agg = a;
-      });
+    if (_loading) return; // keine gestapelten Läufe bei Bump-Salven
+    _loading = true;
+    try {
+      // Performance: jede Tabelle nur EINMAL lesen und die Ergebnisse an
+      // quickDayAgg weiterreichen (früher: Einträge 2×, Defs 2×, Quick 1×).
+      final e = await PhaskaDb.instance.all();
+      final d = await PhaskaDb.instance.fieldDefs();
+      final k = await PhaskaDb.instance.quickKeys();
+      final a = k.isEmpty
+          ? const <String, Map<String, QuickAgg>>{}
+          : await PhaskaDb.instance.quickDayAgg(
+              quick: await PhaskaDb.instance.allQuick(),
+              entries: e,
+              defsById: {for (final x in d) x.id: x},
+            );
+      if (mounted) {
+        setState(() {
+          _entries = e;
+          _defs = d;
+          _quickKeys = k;
+          _agg = a;
+          _cols = csvColumnDefs(d, k); // einmalig statt bei jedem build()
+        });
+      }
+    } finally {
+      _loading = false;
     }
   }
 
@@ -223,11 +245,12 @@ class _TableScreenState extends State<TableScreen> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // KeepAlive
     final theme = Theme.of(context);
     final entries = _entries;
     final stripe =
         theme.colorScheme.surfaceContainerHighest.withValues(alpha: .45);
-    final cols = csvColumnDefs(_defs, _quickKeys);
+    final cols = _cols;
     return Scaffold(
       body: SafeArea(
         child:

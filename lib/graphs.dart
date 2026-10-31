@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'db.dart';
 import 'models.dart';
 import 'l10n.dart';
+import 'onboarding.dart';
 import 'widget_bridge.dart';
 
 /// Farbpalette für Linien/Balken im Verlauf.
@@ -224,6 +225,9 @@ class _GraphCard extends StatelessWidget {
   final VoidCallback onDelete;
   final VoidCallback onSetWidget;
 
+  /// Tutorial: Spotlight-Key ans ⋯-Menü (nur erste Karte).
+  final GlobalKey? menuKey;
+
   const _GraphCard({
     required this.graph,
     required this.entries,
@@ -231,6 +235,7 @@ class _GraphCard extends StatelessWidget {
     required this.onEdit,
     required this.onDelete,
     required this.onSetWidget,
+    this.menuKey,
   });
 
   @override
@@ -309,6 +314,7 @@ class _GraphCard extends StatelessWidget {
                   ]),
             ),
             PopupMenuButton<String>(
+              key: menuKey,
               icon: const Icon(Icons.more_vert, size: 20),
               onSelected: (v) {
                 if (v == 'edit') onEdit();
@@ -387,7 +393,10 @@ class GraphsScreen extends StatefulWidget {
   State<GraphsScreen> createState() => _GraphsScreenState();
 }
 
-class _GraphsScreenState extends State<GraphsScreen> {
+class _GraphsScreenState extends State<GraphsScreen>
+    with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
   List<PhaskaEntry> _entries = const [];
   List<FieldDef> _defs = const [];
   List<GraphDef>? _graphs;
@@ -662,6 +671,7 @@ class _GraphsScreenState extends State<GraphsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // KeepAlive
     final theme = Theme.of(context);
     final graphs = _graphs;
     return Scaffold(
@@ -705,6 +715,7 @@ class _GraphsScreenState extends State<GraphsScreen> {
                               return Container(
                                 key: ValueKey(g.id),
                                 child: _GraphCard(
+                                  menuKey: i == 0 ? kKeyGraphMenuBtn : null,
                                   graph: g,
                                   entries: _entries,
                                   defs: _defs,

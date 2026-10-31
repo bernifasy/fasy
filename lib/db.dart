@@ -518,8 +518,14 @@ class PhaskaDb {
 
   /// Tages-Aggregate: dayKey -> defKey -> QuickAgg. Ein händisch erfasster
   /// Tageswert zählt als zusätzliche Messung (Punkt 2, ohne Rückschreibung).
-  Future<Map<String, Map<String, QuickAgg>>> quickDayAgg() async {
-    final qs = await allQuick();
+  /// Performance: quick/entries/defsById können bereits Geladene
+  /// weitergereicht werden – sonst lädt diese Methode alles selbst.
+  Future<Map<String, Map<String, QuickAgg>>> quickDayAgg({
+    List<QuickValue>? quick,
+    List<PhaskaEntry>? entries,
+    Map<String, FieldDef>? defsById,
+  }) async {
+    final qs = quick ?? await allQuick();
     if (qs.isEmpty) return const {};
     final out = <String, Map<String, QuickAgg>>{};
     for (final q in qs) {
@@ -537,12 +543,12 @@ class PhaskaDb {
         );
       }
     }
-    final defsById = {for (final d in await fieldDefs()) d.id: d};
-    for (final e in await all()) {
+    final byId = defsById ?? {for (final d in await fieldDefs()) d.id: d};
+    for (final e in entries ?? await all()) {
       final m = out[dayKeyOf(e.createdAt)];
       if (m == null) continue;
       for (final k in m.keys.toList()) {
-        final base = entryBaseValue(e, k, defsById);
+        final base = entryBaseValue(e, k, byId);
         if (base == null) continue;
         final cur = m[k]!;
         final n = cur.n + 1;

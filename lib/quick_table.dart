@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import 'capture/steps.dart';
+import 'onboarding.dart';
 import 'db.dart';
 import 'l10n.dart';
 import 'models.dart';
@@ -15,7 +16,11 @@ class QuickTableScreen extends StatefulWidget {
   State<QuickTableScreen> createState() => _QuickTableScreenState();
 }
 
-class _QuickTableScreenState extends State<QuickTableScreen> {
+class _QuickTableScreenState extends State<QuickTableScreen>
+    with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
   List<QuickValue>? _values;
   Map<String, FieldDef> _defs = {};
 
@@ -153,6 +158,7 @@ class _QuickTableScreenState extends State<QuickTableScreen> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // KeepAlive
     final theme = Theme.of(context);
     final values = _values;
     return Scaffold(
@@ -195,6 +201,7 @@ class _QuickTableScreenState extends State<QuickTableScreen> {
                         itemBuilder: (context, i) {
                           final q = values[i];
                           return ListTile(
+                            key: i == 0 ? kKeyQuickFirstRow : null,
                             onLongPress: () => _options(q),
                             leading: CircleAvatar(
                                 radius: 6,

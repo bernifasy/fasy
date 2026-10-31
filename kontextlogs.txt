@@ -1,0 +1,53 @@
+## Fortschritt bis 31.10.2026 (Session 3: Tutorial-Feinschliff + Performance)
+
+### Geänderte Dateien dieser Session
+- `onboarding.dart` — Tutorial-Kern RUNDERN neu:
+  - Neue GlobalKeys: `kKeyGraphMenuBtn`, `kKeyQuickFirstRow`; neuer
+    `tutorialRouteObserver = RouteObserver<PageRoute<dynamic>>()` (prüft,
+    ob Routen über dem HomePager geschlossen wurden → Event 'back_home').
+  - Alle Tutorial-Karten sind per Wischen weglegbar, OHNE das Tutorial zu
+    beenden: Warte-Karten blenden sich aus (Schritt läuft auf sein Ereignis
+    weiter), Karten mit Weiter-Knopf gehen bei Wischen zum NÄCHSTEN Schritt.
+  - Karten-Platzierungsregeln im Overlay: `cardTop` (oben), `bottomFrac`
+    (Unterkante x·Höhe von unten, z. B. Einstellungen-Verweilkarte .25),
+    AUTO: liegt das Spot-Ziel in der unteren Bildschirmhälfte (z. B. Export-
+    FAB), wandert die Karte nach OBEN, sonst unten mit Systemrand-Abstand
+    (`padding.bottom + 24`, nichts wird abgeschnitten).
+  - Spot-Rahmen wird 500 ms nach Anzeige einmal neu eingemessen
+    (`markNeedsBuild`) — behebt „leicht offset" nach Transitionen.
+  - Info-Schritte je Bereich in ZWEI Teile geteilt: Teil 1 ohne Abdunklung
+    (dim: false), Teil 2 mit Abdunklung + Spotlight:
+    Verlauf: ⋮-Menü des ersten Graphen · Einzelerfassungen: erste Zeile ·
+    Alle Erfassungen: Export-FAB (Karte automatisch oben!).
+  - Review-Schritt: Karte oben, hell, wegwischbar, Text exakt:
+    „Hier kannst du deine Erfassungen nochmal überprüfen und anpassen.
+    Abschließend kannst du diese speichern."
+  - Erste Swipe-Aufforderung wartet auf 'back_home' statt Timer → erscheint
+    garantiert NACH Rückkehr auf den Homescreen (nicht mehr auf dem Review-
+    Screen). `_checkImmediate()` deckt den Fall „Ereignis schon passiert" ab
+    (Zielseite sichtbar / Homescreen schon oben).
+  - Verzögerte Advances an den SchrittINDEX gebunden (_scheduleAdvance) —
+    verhindert Mehrfachweiterschaltung durch vielfaches PageController-Feuer.
+- `main.dart` — `navigatorObservers: [tutorialRouteObserver],` im MaterialApp.
+- `graphs.dart` — KeepAlive (`AutomaticKeepAliveClientMixin`, wantKeepAlive,
+  super.build), `_GraphCard` hat optionales `menuKey` → PopupMenuButton,
+  itemBuilder übergibt `kKeyGraphMenuBtn` für erste Karte.
+- `quick_table.dart` — KeepAlive, erste ListTile trägt `kKeyQuickFirstRow`.
+- `table_screen.dart` — KeepAlive, `_loading`-Guard, Spaltendefinitionen in
+  `_cols` einmalig gecacht statt pro Frame neu; `_load()` reicht geladene
+  Daten an quickDayAgg weiter (jede DB-Tabelle wird nur noch 1× gelesen).
+- `db.dart` — `quickDayAgg({quick, entries, defsById})` mit optionalen
+  Parametern (verhindert doppelte/dreifache DB-Läufe).
+- `l10n.dart` — ob_tut_graphs/quick/table → ob_tut_graphs1/graphs2,
+  quick1/quick2, table1/table2 (de+en, alte Keys entfernt);
+  `ob_tut_review_body` auf exakten Wortlaut geschärft.
+
+### Status / bekannte offene Punkte
+- Tutorial-Ablauf vollständig getestet bis auf vom Nutzer verschobene
+  „Feinheiten" (nächste Session; Hinweis Nutzer: Positionen/Wording evtl.
+  nachjustieren).
+- KeepAlive: Drei Neben-Slides (graphs/quick/table) bleiben beim Wischen im
+  Speicher → Slide-Wechsel fühlt sich sofort an. Falls bei sehr vielen
+  Zeilen (300+) „Alle Erfassungen" wieder zäh wird: Umbau der Tabelle auf
+  PaginatedDataTable bzw. lazy Rows ausstehend.
+- Backup-Export/Import, Notifications, Widgets: alles funktional (Session 1/2).

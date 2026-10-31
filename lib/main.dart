@@ -59,6 +59,7 @@ class FasyApp extends StatelessWidget {
         title: 'fasy',
         debugShowCheckedModeBanner: false,
         navigatorKey: navKey,
+        navigatorObservers: [tutorialRouteObserver],
         theme: _theme(Brightness.light),
         darkTheme: _theme(Brightness.dark),
         themeMode: switch (AppColors.themeMode.value) {

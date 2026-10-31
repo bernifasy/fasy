@@ -13,9 +13,16 @@ final kKeyQuickBtn = GlobalKey();
 final kKeySettingsBtn = GlobalKey();
 final kKeyOnboardingBtn = GlobalKey();
 final kKeyExportFab = GlobalKey();
+final kKeyGraphMenuBtn = GlobalKey();
+final kKeyQuickFirstRow = GlobalKey();
 
 /// Der PageController des HomePagers (Tutorial wertet Seitenwechsel aus).
 PageController? homePagerController;
+
+/// Merkt, wann Routen ÜBER dem HomePager geschlossen werden („back_home“) –
+/// die Swipe-Aufforderung erscheint dadurch garantiert erst auf dem Homescreen,
+/// nie mehr auf dem Review-Screen.
+final tutorialRouteObserver = RouteObserver<PageRoute<dynamic>>();
 
 // ============================================================================
 // Willkommens-Dialog (Punkt 10.1)
@@ -430,7 +437,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     );
   }
 }
-
 // ============================================================================
 // Spotlight-Tutorial (Punkt 10.3–10.7)
 // ============================================================================
@@ -440,29 +446,28 @@ class _TutStep {
   final String body;
   final GlobalKey? target;
 
-  /// 'manual' = Weiter-Knopf in der Karte · sonst Ereignis aus main.dart /
-  /// review_screen.dart ('capture_open', 'review_open', 'capture_done',
-  /// 'settings_open', 'settings_done', 'page:<slideId>').
+  /// 'manual' = Weiter-Knopf · sonst Ereignis ('capture_open', 'review_open',
+  /// 'capture_done', 'settings_open', 'settings_done', 'back_home',
+  /// 'page:<slideId>').
   final String wait;
 
-  /// 0 = kein Wisch-Hinweis · 1 = nach links (vorwärts) · -1 = nach rechts.
+  /// 0 = kein Wisch-Hinweis · 1 = nach links · -1 = nach rechts.
   final int swipe;
 
   /// Karte oben statt unten zeigen.
   final bool cardTop;
 
-  /// false = Bildschirm NICHT abdunkeln (Arbeitsschritte wie Erfassung,
-  /// Übersicht, Einstellungen – da soll man ungehindert weiterarbeiten).
+  /// Unterkante der Karte in Anteilen der Bildschirmhöhe von unten
+  /// (null = automatisch unten/oben).
+  final double? bottomFrac;
+
+  /// false = keine Abdunklung (Arbeitsschritte & Info-Teil 1 je Bereich).
   final bool dim;
 
-  /// Karte bei der ersten Eingabe in der Erfassung selbst ausblenden.
+  /// Karte bei der ersten Eingabe selbst ausblenden.
   final bool hideOnInput;
 
-  /// Karte per Wischen weglegen, ohne das Tutorial zu beenden.
-  final bool dismissable;
-
-  /// Wird die Erfassung ABGEBROCHEN (kein review_open), wird dieser
-  /// Schritt übersprungen (Review-Karte auf dem Homescreen wäre falsch).
+  /// Bei abgebrochener Erfassung überspringen.
   final bool skipOnAbort;
 
   const _TutStep(this.title, this.body,
@@ -470,13 +475,13 @@ class _TutStep {
       this.wait = 'manual',
       this.swipe = 0,
       this.cardTop = false,
+      this.bottomFrac,
       this.dim = true,
       this.hideOnInput = false,
-      this.dismissable = false,
       this.skipOnAbort = false});
 }
 
-class TutorialController {
+class TutorialController with RouteAware {
   TutorialController._();
   static final TutorialController instance = TutorialController._();
 
@@ -489,8 +494,7 @@ class TutorialController {
   List<String> _slideIds = const ['home', 'graphs', 'quick', 'table'];
 
   List<_TutStep> _makeSteps(bool g1, bool g2) {
-    // Nur Schritte für Slides, die es auch wirklich gibt – sonst wartet
-    // das Tutorial ewig auf eine Seite, die ausgeblendet ist.
+    // Nur Schritte für Slides, die es auch wirklich gibt.
     final slides = _slideIds;
     return [
       if (g1 || g2) ...[
@@ -505,29 +509,35 @@ class TutorialController {
             wait: 'review_open',
             cardTop: true,
             dim: false,
-            hideOnInput: true,
-            dismissable: true),
+            hideOnInput: true),
         _TutStep(S.t('ob_tut_review'), S.t('ob_tut_review_body'),
             wait: 'capture_done',
             cardTop: true,
             dim: false,
-            dismissable: true,
             skipOnAbort: true),
       ],
       if (slides.contains('graphs')) ...[
         _TutStep(S.t('ob_tut_swipe_right'), '',
-            wait: 'page:graphs', swipe: 1),
-        _TutStep(S.t('ob_tut_graphs'), S.t('ob_tut_graphs_body')),
+            wait: 'back_home', swipe: 1),
+        _TutStep(S.t('ob_tut_graphs1'), S.t('ob_tut_graphs1_body'),
+            dim: false),
+        _TutStep(S.t('ob_tut_graphs2'), S.t('ob_tut_graphs2_body'),
+            target: kKeyGraphMenuBtn),
       ],
       if (slides.contains('quick')) ...[
         _TutStep(S.t('ob_tut_swipe_right2'), '',
             wait: 'page:quick', swipe: 1),
-        _TutStep(S.t('ob_tut_quick'), S.t('ob_tut_quick_body')),
+        _TutStep(S.t('ob_tut_quick1'), S.t('ob_tut_quick1_body'),
+            dim: false),
+        _TutStep(S.t('ob_tut_quick2'), S.t('ob_tut_quick2_body'),
+            target: kKeyQuickFirstRow),
       ],
       if (slides.contains('table')) ...[
         _TutStep(S.t('ob_tut_swipe_right3'), '',
             wait: 'page:table', swipe: 1),
-        _TutStep(S.t('ob_tut_table'), S.t('ob_tut_table_body'),
+        _TutStep(S.t('ob_tut_table1'), S.t('ob_tut_table1_body'),
+            dim: false),
+        _TutStep(S.t('ob_tut_table2'), S.t('ob_tut_table2_body'),
             target: kKeyExportFab),
       ],
       if (slides.length > 1)
@@ -536,7 +546,7 @@ class TutorialController {
       _TutStep(S.t('ob_tut_settings'), S.t('ob_tut_settings_body'),
           target: kKeySettingsBtn, wait: 'settings_open'),
       _TutStep(S.t('ob_tut_settings'), S.t('ob_tut_settings_open'),
-          wait: 'settings_done', cardTop: true, dim: false),
+          wait: 'settings_done', bottomFrac: .25, dim: false),
     ];
   }
 
@@ -547,12 +557,25 @@ class TutorialController {
     if (active) return;
     active = true;
     _index = 0;
-    _appContext = context; // Route-Context! (nie navKey.currentContext)
+    _appContext = context;
     _slideIds = List.of(slideIds);
     _steps = _makeSteps(g1, g2);
     _onDone = onDone;
     homePagerController?.addListener(_onPager);
     _show();
+    // Beobachten, wann Capture/Settings über dem Pager geschlossen werden:
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final route = ModalRoute.of(context);
+      if (route is PageRoute<dynamic>) {
+        tutorialRouteObserver.subscribe(this, route);
+      }
+    });
+  }
+
+  /// RouteAware: Eine Route ÜBER dem HomePager wurde geschlossen.
+  @override
+  void didPopNext() {
+    if (active) notifyRoute('back_home');
   }
 
   void next() => _advance();
@@ -566,13 +589,10 @@ class TutorialController {
     }
     _index++;
     if (!silent) _show();
-    // Steht der neue Schritt auf eine Seite, die längst sichtbar ist
-    // (schnell weitergewischt), sofort auswerten statt zu hängen:
-    if (active && _step.wait.startsWith('page:')) _onPager();
+    _checkImmediate();
   }
 
-  /// Karte ausblenden, ohne den Schritt abzuschließen (wegwischbar /
-  /// automatisch bei erster Eingabe).
+  /// Karte ausblenden, ohne den Schritt abzuschließen.
   void hideCard() {
     _entry?.remove();
     _entry = null;
@@ -584,17 +604,31 @@ class TutorialController {
     if (_step.hideOnInput) hideCard();
   }
 
-  /// Verzögerter Schrittwechsel, der NUR feuert, wenn bis dahin noch
-  /// derselbe Schritt aktiv ist. WICHTIG: Der PageController feuert
-  /// während einer Wisch-Animation viele Male – ohne diese Bindung
-  /// lief das Tutorial mehrere Schritte auf einmal weiter (darum
-  /// „endete" es für dich stets am Verlauf).
+  /// Verzögerter Schrittwechsel, gebunden an den Schritt, für den er
+  /// geplant wurde (PageController feuert bei Wisch-Animationen vielfach –
+  /// späte Doppelschüsse verpuffen sonst das ganze Tutorial).
   void _scheduleAdvance() {
     final forIndex = _index;
     Future.delayed(const Duration(milliseconds: 350), () {
       if (!active || _index != forIndex) return;
       _advance();
     });
+  }
+
+  /// Betritt der neue Schritt einen Wartezustand, der jetzt schon erfüllt
+  /// ist (Zielseite sichtbar / Homescreen bereits oben), direkt weiter –
+  /// sonst hinge das Tutorial unnötig an schon verpassten Ereignissen.
+  void _checkImmediate() {
+    if (!active) return;
+    final w = _step.wait;
+    if (w.startsWith('page:')) {
+      _onPager();
+    } else if (w == 'back_home') {
+      final ctx = _appContext;
+      if (ctx == null) return;
+      final route = ModalRoute.of(ctx);
+      if (route != null && route.isCurrent) _scheduleAdvance();
+    }
   }
 
   void _onPager() {
@@ -608,12 +642,12 @@ class TutorialController {
     }
   }
 
-  /// Wird aus main.dart / review_screen.dart aufgerufen.
+  /// Wird aus main.dart / review_screen.dart / RouteObserver aufgerufen.
   void notifyRoute(String event) {
     if (!active) return;
     final w = _step.wait;
-    // Erfassung wurde ABGEBROCHEN, bevor die Übersicht kam: Flow-Schritt
-    // stil beenden, Review-Schritt (skipOnAbort) ebenfalls überspringen.
+    // Erfassung ABGEBROCHEN, bevor die Übersicht kam: Review-Schritt
+    // (skipOnAbort) still überspringen.
     if (w == 'review_open' && event == 'capture_done') {
       _advance(silent: true);
       if (active && _step.skipOnAbort) _advance();
@@ -638,22 +672,35 @@ class TutorialController {
   void _show() {
     final ctx = _appContext;
     if (ctx == null) return;
+    final manual = _step.wait == 'manual';
     _entry = OverlayEntry(builder: (context) {
       return _SpotlightOverlay(
         rect: _targetRect(),
         title: _step.title,
         body: _step.body,
-        manual: _step.wait == 'manual',
+        manual: manual,
         swipe: _step.swipe,
         cardTop: _step.cardTop,
+        bottomFrac: _step.bottomFrac,
         dim: _step.dim,
-        dismissable: _step.dismissable,
         onNext: next,
         onSkip: skip,
-        onDismiss: hideCard,
+        // ALLE Karten sind wegwischbar: Wartende Karten blenden sich aus
+        // (das Tutorial wartet weiterhin auf sein Ereignis), Karten mit
+        // Weiter-Knopf gehen bei Wischen zum nächsten Schritt über.
+        onDismiss: manual ? next : hideCard,
       );
     });
+    // ignore: use_build_context_synchronously
     Overlay.of(ctx).insert(_entry!);
+    // Nachläufe & Animationen können das Ziel verschieben (z. B. war die
+    // Umrandung am Zahnrad „leicht offset") → einmal neu einmessen:
+    final entry = _entry;
+    Future.delayed(const Duration(milliseconds: 500), () {
+      if (active && _entry == entry && entry != null && entry.mounted) {
+        entry.markNeedsBuild();
+      }
+    });
   }
 
   Future<void> skip() async {
@@ -669,11 +716,13 @@ class TutorialController {
 
   Future<void> _cleanup() async {
     active = false;
+    tutorialRouteObserver.unsubscribe(this);
     homePagerController?.removeListener(_onPager);
     _appContext = null;
     await PhaskaDb.instance.clearDemoData(); // Beispielwerte entfernen
   }
 }
+
 /// Abschluss-Screen (Punkt 10.8).
 class FinishScreen extends StatelessWidget {
   const FinishScreen({super.key});
@@ -725,7 +774,8 @@ class FinishScreen extends StatelessWidget {
 class _SpotlightOverlay extends StatelessWidget {
   final Rect? rect;
   final String title, body;
-  final bool manual, cardTop, dim, dismissable;
+  final bool manual, cardTop, dim;
+  final double? bottomFrac;
   final int swipe;
   final VoidCallback onNext, onSkip, onDismiss;
 
@@ -736,7 +786,7 @@ class _SpotlightOverlay extends StatelessWidget {
     required this.manual,
     required this.cardTop,
     required this.dim,
-    required this.dismissable,
+    required this.bottomFrac,
     required this.swipe,
     required this.onNext,
     required this.onSkip,
@@ -755,9 +805,20 @@ class _SpotlightOverlay extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final size = MediaQuery.sizeOf(context);
-    final r = rect; // lokale Kopie → Promotion funktioniert
+    final topPad = MediaQuery.paddingOf(context).top;
+    final bottomPad = MediaQuery.paddingOf(context).bottom;
+    final r = rect;
 
-    Widget card = Card(
+    // PLATZIERUNGS-AUDIT jeder Karte:
+    // · bottomFrac gesetzt → Unterkante auf x·Höhe (Einstellungen-Verweil).
+    // · Liegt das Spot-Ziel in der UNTEREN Bildschirmhälfte (z. B. der
+    //   Export-FAB), wandert die Karte automatisch nach OBEN – sie
+    //   versperrt ihr Ziel so nie.
+    // · Sonst unten (mit Systemrand-Abstand → nichts wird abgeschnitten).
+    final placeTop = cardTop ||
+        (bottomFrac == null && r != null && r.center.dy > size.height * .55);
+
+    final card = Card(
       elevation: 8,
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -787,33 +848,24 @@ class _SpotlightOverlay extends StatelessWidget {
                       onPressed: onNext, child: Text(S.t('next'))),
                 ),
               ],
-              if (dismissable)
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: Center(
-                    child: Text('zum Ausblenden wegwischen',
-                        style: theme.textTheme.labelSmall?.copyWith(
-                            color: theme.colorScheme.outline)),
-                  ),
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: Center(
+                  child: Text(
+                      manual ? 'wischen: weiter' : 'wischen: ausblenden',
+                      style: theme.textTheme.labelSmall
+                          ?.copyWith(color: theme.colorScheme.outline)),
                 ),
+              ),
             ]),
       ),
     );
-    if (dismissable) {
-      // Wegwischbar: Tutorial läuft im Hintergrund weiter (onDismiss),
-      // es wird NICHT beendet (das wäre onSkip).
-      card = GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onPanEnd: (_) => onDismiss(),
-        child: card,
-      );
-    }
 
     return Material(
       type: MaterialType.transparency,
       child: Stack(children: [
-        // 1) Abdunklung nur, wenn der Schritt es will – UND als reine Deko
-        //    (IgnorePointer!), sonst schluckt sie alle Touches.
+        // 1) Abdunklung – reine Deko (IgnorePointer!), sonst schluckt
+        //    sie alle Touches.
         if (dim)
           Positioned.fill(
             child: IgnorePointer(
@@ -848,13 +900,19 @@ class _SpotlightOverlay extends StatelessWidget {
               ),
             ),
           ),
-        // 4) Karte ganz OBEN → immer erreichbar.
+        // 4) Karte ganz OBEN, positioniert wie oben auditiert.
         Positioned(
           left: 16,
           right: 16,
-          top: cardTop ? MediaQuery.paddingOf(context).top + 24 : null,
-          bottom: cardTop ? null : 24,
-          child: card,
+          top: bottomFrac == null && placeTop ? topPad + 24 : null,
+          bottom: bottomFrac != null
+              ? size.height * bottomFrac!
+              : (placeTop ? null : bottomPad + 24),
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onPanEnd: (_) => onDismiss(),
+            child: card,
+          ),
         ),
       ]),
     );
@@ -918,7 +976,6 @@ class _SwipeHintState extends State<_SwipeHint>
         return SizedBox(
           height: 84,
           child: Stack(alignment: Alignment.center, children: [
-            // dezente Spur, auf der der Finger entlangfährt
             Container(
               width: 190,
               height: 44,
