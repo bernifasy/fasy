@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'db.dart';
 import 'models.dart';
+import 'l10n.dart';
 import 'widget_bridge.dart';
 
 /// Farbpalette für Linien/Balken im Verlauf.
@@ -669,7 +670,7 @@ class _GraphsScreenState extends State<GraphsScreen> {
             Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
-            child: Text('Verlauf',
+            child: Text(S.t('screen_graphs'),
                 style: theme.textTheme.headlineSmall
                     ?.copyWith(fontWeight: FontWeight.bold)),
           ),

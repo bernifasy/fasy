@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 
 import 'capture/steps.dart';
 import 'db.dart';
+import 'l10n.dart';
 import 'models.dart';
 import 'quick_capture.dart';
 
@@ -161,7 +162,7 @@ class _QuickTableScreenState extends State<QuickTableScreen> {
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
             child: Row(children: [
-              Text('Einzelerfassungen',
+              Text(S.t('screen_quick'),
                   style: theme.textTheme.headlineSmall
                       ?.copyWith(fontWeight: FontWeight.bold)),
               const Spacer(),

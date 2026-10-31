@@ -4,6 +4,10 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
+}
+
 android {
     namespace = "com.example.fasy"
     compileSdk = 36
@@ -35,6 +39,11 @@ android {
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
         }
+    }
+
+    // Fix for flutter_local_notifications requiring core library desugaring
+    compileOptions {
+        isCoreLibraryDesugaringEnabled = true
     }
 }
 

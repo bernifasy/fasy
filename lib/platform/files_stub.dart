@@ -11,6 +11,9 @@ abstract class FilesGateway {
   /// Autosave in den app-internen Ordner. Web: bewusst ohne Wirkung –
   /// die PWA-Persistenz liegt in der Browser-Datenbank (IndexedDB/OPFS).
   Future<void> autosave(String fileName, List<int> bytes);
+  /// Mehrere Dateien gleichzeitig teilen (Punkt 2: Export-Bundle).
+  Future<void> shareMany(List<(String, List<int>, String)> files,
+      {required String text});
 }
 
 FilesGateway get filesGateway =>

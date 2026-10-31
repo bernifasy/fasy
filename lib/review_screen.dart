@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import 'capture/capture_flow.dart';
+import 'onboarding.dart';
 import 'capture/steps.dart';
 import 'db.dart';
+import 'l10n.dart';
 import 'models.dart';
 
 class ReviewScreen extends StatefulWidget {
@@ -21,6 +23,8 @@ class _ReviewScreenState extends State<ReviewScreen> {
   @override
   void initState() {
     super.initState();
+    // Tutorial: „Überprüfen & Speichern"-Karte anzeigen.
+    TutorialController.instance.notifyRoute('review_open');
     _load();
   }
 
@@ -32,13 +36,21 @@ class _ReviewScreenState extends State<ReviewScreen> {
   }
 
   String _or(String? v) => (v == null || v.isEmpty) ? '—' : v;
-  String _bLabel(String id, String canonical) => _labels[id] ?? canonical;
+  String _bLabel(String id) => _labels[id] ?? S.builtin(id);
+
+  String _elvanseText(PhaskaEntry e) {
+    if (e.elvanseMg == null) return '—';
+    if (e.elvanseMg == 0) return S.t('rev_none');
+    final parts = ['${e.elvanseMg} mg'];
+    if (e.elvanseZeit != null) parts.add('${e.elvanseZeit} ${S.t('w_uhr')}');
+    return parts.join(' · ');
+  }
 
   String _medikinetText(PhaskaEntry e) {
     if (e.medikinetMg == null) return '—';
-    if (e.medikinetMg == 0) return 'keine';
+    if (e.medikinetMg == 0) return S.t('rev_none');
     final parts = ['${e.medikinetMg} mg'];
-    if (e.medikinetZeit != null) parts.add('${e.medikinetZeit} Uhr');
+    if (e.medikinetZeit != null) parts.add('${e.medikinetZeit} ${S.t('w_uhr')}');
     if (e.medikinetMagen != null) {
       var m = e.medikinetMagen!;
       if (e.medikinetEssenAbstand != null) {
@@ -53,64 +65,61 @@ class _ReviewScreenState extends State<ReviewScreen> {
       PhaskaEntry e) {
     return [
       (
-        label: _bLabel('wohlbefinden', 'Wohlbefinden'),
+        label: _bLabel('wohlbefinden'),
         value: e.wohlbefinden?.toString() ?? '—',
         stepId: 'wohlbefinden'
       ),
       (
-        label: _bLabel('schlaf', 'Schlaf'),
+        label: _bLabel('schlaf'),
         value:
             e.schlafStunden == null ? '—' : '${fmtDe(e.schlafStunden!)} h',
         stepId: 'schlaf'
       ),
       (
-        label: _bLabel('elvanse', 'Elvanse'),
-        value: e.elvanseMg == null
-            ? '—'
-            : (e.elvanseMg == 0 ? 'keine' : '${e.elvanseMg} mg'),
+        label: _bLabel('elvanse'),
+        value: _elvanseText(e), // Punkt 5: inkl. Uhrzeit
         stepId: 'elvanse'
       ),
       (
-        label: _bLabel('unruhe', 'Innere Unruhe'),
+        label: _bLabel('unruhe'),
         value: e.innereUnruhe == null ? '—' : fmtDe(e.innereUnruhe!),
         stepId: 'unruhe'
       ),
       (
-        label: _bLabel('medikinet', 'Medikinet'),
+        label: _bLabel('medikinet'),
         value: _medikinetText(e),
         stepId: 'medikinet'
       ),
       (
-        label: _bLabel('intensitaet', 'Migräne-Intensität'),
+        label: _bLabel('intensitaet'),
         value: e.migraeneIntensitaet?.toString() ?? '—',
         stepId: 'intensitaet'
       ),
       (
-        label: _bLabel('start', 'Migräne Beginn'),
+        label: _bLabel('start'),
         value: _or(e.migraeneStart),
         stepId: 'start'
       ),
       (
-        label: _bLabel('ende', 'Migräne Ende'),
+        label: _bLabel('ende'),
         value: _or(e.migraeneEnde),
         stepId: 'ende'
       ),
       (
-        label: _bLabel('ausloeser', 'Auslöser'),
+        label: _bLabel('ausloeser'),
         value: _or(e.ausloeser),
         stepId: 'ausloeser'
       ),
       (
-        label: _bLabel('symptome', 'Begleitsymptome'),
+        label: _bLabel('symptome'),
         value: _or(e.begleitsymptome),
         stepId: 'symptome'
       ),
       (
-        label: _bLabel('notizen', 'Notizen'),
+        label: _bLabel('notizen'),
         value: _or(e.notizen),
         stepId: 'notizen'
       ),
-      // Eigene Datenpunkte (alle Eingaben einzeln)
       for (final d in _defs)
         for (final inp in d.inputs)
           (
@@ -119,15 +128,14 @@ class _ReviewScreenState extends State<ReviewScreen> {
             stepId: d.id
           ),
       (
-        label: 'Migränetag',
+        label: S.t('rev_migday'),
         value: '${e.migraeneTag} (automatisch)',
         stepId: null
       ),
-      // Zeitstempel ändern – bewusst ans Ende gestellt
       (
-        label: 'Erfasst am',
+        label: S.t('rev_created'),
         value:
-            '${DateFormat('dd.MM.yyyy · HH:mm').format(e.createdAt)} Uhr',
+            '${DateFormat('dd.MM.yyyy · HH:mm').format(e.createdAt)} ${S.t('w_uhr')}',
         stepId: '_created'
       ),
     ];
@@ -141,7 +149,7 @@ class _ReviewScreenState extends State<ReviewScreen> {
       initialDate: e.createdAt.isAfter(now) ? now : e.createdAt,
       firstDate: DateTime(2015),
       lastDate: now,
-      helpText: 'Auf welchem Tag wurde erfasst?',
+      helpText: S.t('rev_date_help'),
     );
     if (picked == null || !mounted) return;
     final prev = TimeOfDay.fromDateTime(e.createdAt);
@@ -181,27 +189,25 @@ class _ReviewScreenState extends State<ReviewScreen> {
     if (!mounted) return;
     Navigator.pop(context);
     messenger.showSnackBar(SnackBar(
-        content: Text(isNew
-            ? 'Erfassung gespeichert 🎉'
-            : 'Änderungen gespeichert ✅')));
+        content: Text(isNew ? S.t('rev_saved_new') : S.t('rev_saved_edit'))));
   }
 
   Future<void> _discard() async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Erfassung verwerfen?'),
-        content: const Text('Die Daten werden nicht gespeichert.'),
+        title: Text(S.t('rev_discard_title')),
+        content: Text(S.t('rev_discard_body')),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Zurück')),
+              child: Text(S.t('back'))),
           FilledButton(
               style: FilledButton.styleFrom(
                   backgroundColor: Theme.of(ctx).colorScheme.error,
                   foregroundColor: Theme.of(ctx).colorScheme.onError),
               onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Verwerfen')),
+              child: Text(S.t('rev_discard'))),
         ],
       ),
     );
@@ -214,9 +220,8 @@ class _ReviewScreenState extends State<ReviewScreen> {
     final items = _items(widget.entry);
     return Scaffold(
       appBar: AppBar(
-          title: Text(widget.entry.id == null
-              ? 'Übersicht'
-              : 'Eintrag bearbeiten'),
+          title: Text(
+              widget.entry.id == null ? S.t('rev_title_new') : S.t('rev_title_edit')),
           automaticallyImplyLeading: false),
       body: ListView.separated(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 120),
@@ -250,7 +255,7 @@ class _ReviewScreenState extends State<ReviewScreen> {
             Expanded(
               child: OutlinedButton(
                   onPressed: _discard,
-                  child: const Text('Verwerfen')),
+                  child: Text(S.t('rev_discard'))),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -259,8 +264,8 @@ class _ReviewScreenState extends State<ReviewScreen> {
                   onPressed: _save,
                   icon: const Icon(Icons.save_outlined),
                   label: Text(widget.entry.id == null
-                      ? 'Speichern'
-                      : 'Änderungen speichern')),
+                      ? S.t('save')
+                      : S.t('rev_save_changes'))),
             ),
           ]),
         ),

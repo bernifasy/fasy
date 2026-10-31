@@ -9,36 +9,23 @@ import 'models.dart';
 import 'platform/files.dart';
 
 // ============================================================================
-// fasy-Datenzugriff – jetzt auf drift (gleiche API wie zuvor unter sqflite).
-//
-// Daten-Garantien:
-//  * Datei phaska.db bleibt unter Android am alten Ort (siehe connection/).
-//  * Tabellen/Spalten byteidentisch (database.dart, rohe SQL-Migrationen).
-//  * user_version 4 → 5 als No-Op → S23-Bestand läuft per App-Update weiter.
-//  * Alle fachlichen Regeln (migraene_tag > 2, _qw-Marker, Aggregat-Logik,
-//    CSV-Import) sind 1:1 übernommen.
+// fasy-Datenzugriff (drift, nativ + Web).
+// Punkt 2: Schnellmessungs-Durchschnitt wird NICHT mehr in den Tageswert
+//          zurückgeschrieben. Einmalig werden alte _qw-Marker bereinigt.
 // ============================================================================
 
-/// Tages-Aggregat einer Einzelerfassung (Ø, Min, Max, Anzahl).
 typedef QuickAgg = ({double avg, double min, double max, int n});
 
-/// 'yyyy-MM-dd'-Schlüssel eines Datums (für Tages-Gruppierungen).
 String dayKeyOf(DateTime d) =>
     '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
-// -------- Schnellmessung ↔ Tageseintrag (Punkt 5) --------
 
-/// Marker-Map eines Eintrags: defKey → zuletzt aus Schnellmessungen
-/// zurückgeschriebener Ø-Wert. Dadurch erkennen wir, ob der Wert am
-/// Tageseintrag "von Hand" stammt oder nur das Aggregat widerspiegelt.
+/// Legacies: Marker, die früher zurückgeschriebene Ø-Werte markierten.
 Map<String, double> quickWritten(PhaskaEntry e) {
   final raw = e.custom['_qw'];
   if (raw is! Map) return {};
-  return {
-    for (final en in raw.entries) '${en.key}': (en.value as num).toDouble()
-  };
+  return {for (final en in raw.entries) '${en.key}': (en.value as num).toDouble()};
 }
 
-/// Aktueller Wert eines Mess-Schlüssels am Tageseintrag.
 double? entryValueForKey(
     PhaskaEntry e, String key, Map<String, FieldDef> defsById) {
   switch (key) {
@@ -70,14 +57,13 @@ double? entryValueForKey(
   return null;
 }
 
-/// Tageswert, der ins Aggregat einfließen darf: null, wenn es nur der
-/// zuvor zurückgeschriebene Durchschnitt ist (sonst Doppelzählung!).
+/// Händisch erfasster Tageswert (alte Legacy-Marker zählen nicht als händisch).
 double? entryBaseValue(
     PhaskaEntry e, String key, Map<String, FieldDef> defsById) {
   final v = entryValueForKey(e, key, defsById);
   if (v == null) return null;
   final written = quickWritten(e)[key];
-  if (written != null && written == v) return null; // nur der alte Ø
+  if (written != null && written == v) return null;
   return v;
 }
 
@@ -85,14 +71,14 @@ class PhaskaDb {
   PhaskaDb._();
   static final PhaskaDb instance = PhaskaDb._();
 
-  /// Weiterhin vorhanden (Kompatibilität) – die Tabelle heißt unverändert so.
   static const table = 'entries';
 
   FasyDatabase? _db;
-
   Future<FasyDatabase> get database async => _db ??= FasyDatabase();
 
-  // ---------- Mapping: Modelle ↔ drift-Zeilen ----------
+  bool _cleanupDone = false;
+
+  // ---------- Mapping ----------
 
   EntriesCompanion _entryToCompanion(PhaskaEntry e) => EntriesCompanion(
         id: e.id == null ? const Value.absent() : Value(e.id!),
@@ -100,6 +86,7 @@ class PhaskaDb {
         wohlbefinden: Value(e.wohlbefinden),
         schlafStunden: Value(e.schlafStunden),
         elvanseMg: Value(e.elvanseMg),
+        elvanseZeit: Value(e.elvanseZeit), // Punkt 5
         innereUnruhe: Value(e.innereUnruhe),
         medikinetMg: Value(e.medikinetMg),
         medikinetZeit: Value(e.medikinetZeit),
@@ -121,6 +108,7 @@ class PhaskaDb {
         'wohlbefinden': r.wohlbefinden,
         'schlaf_stunden': r.schlafStunden,
         'elvanse_mg': r.elvanseMg,
+        'elvanse_zeit': r.elvanseZeit, // Punkt 5
         'innere_unruhe': r.innereUnruhe,
         'medikinet_mg': r.medikinetMg,
         'medikinet_zeit': r.medikinetZeit,
@@ -166,12 +154,8 @@ class PhaskaDb {
     );
   }
 
-  GraphDef _graphFromRow(GraphDefRow r) => GraphDef.fromMap({
-        'id': r.id,
-        'title': r.title,
-        'cfg': r.cfg,
-        'position': r.position,
-      });
+  GraphDef _graphFromRow(GraphDefRow r) =>
+      GraphDef.fromMap({'id': r.id, 'title': r.title, 'cfg': r.cfg, 'position': r.position});
 
   QuickValuesCompanion _quickToCompanion(QuickValue q) => QuickValuesCompanion(
         id: q.id == null ? const Value.absent() : Value(q.id!),
@@ -189,10 +173,31 @@ class PhaskaDb {
         'created_at': r.createdAt,
       });
 
+  // ---------- Punkt 2: Einmal-Bereinigung alter Ø-Rückschreibungen ----------
+
+  Future<void> _cleanupLegacyQuickWritebacks() async {
+    if (_cleanupDone) return;
+    _cleanupDone = true;
+    if (await _meta('qw_cleanup') == '1') return;
+    final defsById = {for (final d in await fieldDefs()) d.id: d};
+    for (final e in await all()) {
+      final marks = quickWritten(e);
+      if (marks.isEmpty) continue;
+      var changed = false;
+      for (final en in marks.entries) {
+        if (entryValueForKey(e, en.key, defsById) == en.value) {
+          clearEntryValueForKey(e, en.key, defsById);
+          changed = true;
+        }
+      }
+      e.custom.remove('_qw');
+      if (changed || marks.isNotEmpty) await update(e);
+    }
+    await _setMeta('qw_cleanup', '1');
+  }
+
   // ---------- Einträge ----------
 
-  /// Direktes Einfügen OHNE Repo-Bump/Autosave (für den CSV-Import,
-  /// der am Ende einmal gesammelt meldet).
   Future<int> insertRaw(PhaskaEntry e) async {
     final db = await database;
     return db.into(db.entries).insert(_entryToCompanion(e));
@@ -221,6 +226,7 @@ class PhaskaDb {
   }
 
   Future<List<PhaskaEntry>> all() async {
+    await _cleanupLegacyQuickWritebacks();
     final db = await database;
     final rows = await (db.select(db.entries)
           ..orderBy([(t) => OrderingTerm.desc(t.createdAt)]))
@@ -231,9 +237,8 @@ class PhaskaDb {
   Future<List<String>> pastValues(String column) async {
     assert(column == 'ausloeser' || column == 'begleitsymptome');
     final db = await database;
-    final GeneratedColumn<String> col = column == 'ausloeser'
-        ? db.entries.ausloeser
-        : db.entries.begleitsymptome;
+    final GeneratedColumn<String> col =
+        column == 'ausloeser' ? db.entries.ausloeser : db.entries.begleitsymptome;
     final rows = await (db.selectOnly(db.entries)
           ..addColumns([col])
           ..where(col.isNotNull()))
@@ -247,28 +252,63 @@ class PhaskaDb {
         if (t.isNotEmpty) found.add(t);
       }
     }
-    return found.toList()
-      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    return found.toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
   }
 
-  // ---------- Eigene Datenpunkte & Reihenfolge ----------
+  // ---------- Punkt 7: unbeendete Migräne ----------
+
+  /// Fehler 6: NUR die jüngste Migräne-Erfassung entscheidet. Der Knopf
+  /// erscheint, wenn genau diese Erfassung einen Beginn, aber noch kein
+  /// Ende hat. Ältere „hängengebliebene" Einträge zünden den Knopf nicht
+  /// mehr, sobald danach eine abgeschlossene Migräne-Erfassung existiert.
+  Future<PhaskaEntry?> runningMigraine() async {
+    for (final e in await all()) { // all() = absteigend nach created_at
+      final hasMigraeneData = e.migraeneIntensitaet != null ||
+          (e.migraeneStart?.isNotEmpty ?? false) ||
+          (e.migraeneEnde?.isNotEmpty ?? false);
+      if (!hasMigraeneData) continue; // reine Tageseinträge überspringen
+      // jüngster Migräne-Eintrag gefunden:
+      final start = e.migraeneStart;
+      final endeOffen = e.migraeneEnde == null || e.migraeneEnde!.isEmpty;
+      if (start != null && start.isNotEmpty && endeOffen) return e;
+      return null; // letzte Migräne-Erfassung ist geschlossen → Schluss
+    }
+    return null;
+  }
+
+  // ---------- Punkt 8.5.I: Tageserfassung nach 04:00 vorhanden? ----------
+
+  Future<bool> hasDayCaptureAfter4(DateTime day) async {
+    final defs = await fieldDefs();
+    for (final e in await all()) {
+      final d = e.createdAt;
+      if (d.year != day.year || d.month != day.month || d.day != day.day) continue;
+      if (d.hour < 4) continue;
+      var g1 = e.hasG1;
+      for (final f in defs) {
+        final v = e.custom[f.id];
+        if (v != null && (v is! String || v.isNotEmpty) && f.group == 1) {
+          g1 = true;
+        }
+      }
+      if (g1) return true;
+    }
+    return false;
+  }
+
+  // ---------- Eigene Datenpunkte ----------
 
   Future<List<FieldDef>> fieldDefs({int? group}) async {
     final db = await database;
-    final q = db.select(db.fieldDefs)
-      ..orderBy([(t) => OrderingTerm.asc(t.position)]);
-    if (group != null) {
-      q.where((t) => t.grp.equals(group));
-    }
+    final q = db.select(db.fieldDefs)..orderBy([(t) => OrderingTerm.asc(t.position)]);
+    if (group != null) q.where((t) => t.grp.equals(group));
     final rows = await q.get();
     return [for (final r in rows) _fieldDefFromRow(r)];
   }
 
   Future<void> saveFieldDef(FieldDef d) async {
     final db = await database;
-    await db
-        .into(db.fieldDefs)
-        .insert(_fieldDefToCompanion(d), mode: InsertMode.replace);
+    await db.into(db.fieldDefs).insert(_fieldDefToCompanion(d), mode: InsertMode.replace);
     Repo.bump();
   }
 
@@ -280,10 +320,12 @@ class PhaskaDb {
 
   // ---------- Meta ----------
 
+  Future<String?> getMeta(String key) async => _meta(key);
+  Future<void> setMeta(String key, String value) => _setMeta(key, value);
+
   Future<String?> _meta(String key) async {
     final db = await database;
-    final rows =
-        await (db.select(db.meta)..where((t) => t.key.equals(key))).get();
+    final rows = await (db.select(db.meta)..where((t) => t.key.equals(key))).get();
     return rows.isEmpty ? null : rows.first.value;
   }
 
@@ -299,52 +341,111 @@ class PhaskaDb {
     return v == null ? null : [for (final e in jsonDecode(v) as List) '$e'];
   }
 
-  Future<void> saveStepOrder(int group, List<String> ids) =>
-      _setMeta('order_g$group', jsonEncode(ids));
+  Future<void> saveStepOrder(int group, List<String> ids) async {
+    await _setMeta('order_g$group', jsonEncode(ids));
+    Repo.bump();
+  }
 
   Future<Set<String>> hiddenBuiltins(int group) async {
     final v = await _meta('hidden_g$group');
     return v == null ? {} : {for (final e in jsonDecode(v) as List) '$e'};
   }
 
-  Future<void> saveHiddenBuiltins(int group, Set<String> ids) =>
-      _setMeta('hidden_g$group', jsonEncode(ids.toList()));
+  Future<void> saveHiddenBuiltins(int group, Set<String> ids) async {
+    await _setMeta('hidden_g$group', jsonEncode(ids.toList()));
+    Repo.bump();
+  }
 
   Future<Map<String, String>> builtinLabels(int group) async {
     final v = await _meta('labels_g$group');
     if (v == null) return {};
-    return {
-      for (final e in (jsonDecode(v) as Map).entries) '${e.key}': '${e.value}'
-    };
+    return {for (final e in (jsonDecode(v) as Map).entries) '${e.key}': '${e.value}'};
   }
 
-  Future<void> saveBuiltinLabels(int group, Map<String, String> m) =>
-      _setMeta('labels_g$group', jsonEncode(m));
+  Future<void> saveBuiltinLabels(int group, Map<String, String> m) async {
+    await _setMeta('labels_g$group', jsonEncode(m));
+    Repo.bump();
+  }
 
   Future<Map<String, String>> builtinThemes(int group) async {
     final v = await _meta('themes_g$group');
     if (v == null) return {};
-    return {
-      for (final e in (jsonDecode(v) as Map).entries) '${e.key}': '${e.value}'
-    };
+    return {for (final e in (jsonDecode(v) as Map).entries) '${e.key}': '${e.value}'};
   }
 
-  Future<void> saveBuiltinThemes(int group, Map<String, String> m) =>
-      _setMeta('themes_g$group', jsonEncode(m));
+  Future<void> saveBuiltinThemes(int group, Map<String, String> m) async {
+    await _setMeta('themes_g$group', jsonEncode(m));
+    Repo.bump();
+  }
 
-  // ---------- Farben & Theme ----------
+  // ---------- Farben & Theme & Sprache ----------
 
   Future<(int, int)> loadColors() async => (
         int.tryParse(await _meta('color_g1') ?? '') ?? kDefaultGroup1Color,
         int.tryParse(await _meta('color_g2') ?? '') ?? kDefaultGroup2Color,
       );
 
-  Future<void> saveColor(int group, int argb) =>
-      _setMeta('color_g$group', '$argb');
+  Future<void> saveColor(int group, int argb) async {
+    await _setMeta('color_g$group', '$argb');
+    Repo.bump();
+  }
+
+  /// Punkt 7: Farbe des „Attacke beendet"-Knopfes (Gruppe 4).
+  Future<int> loadAttackEndColor() async =>
+      int.tryParse(await _meta('color_g4') ?? '') ?? kDefaultAttackEndColor;
 
   Future<String> loadThemeMode() async => await _meta('theme_mode') ?? 'system';
+  Future<void> saveThemeMode(String mode) async {
+    await _setMeta('theme_mode', mode);
+    Repo.bump();
+  }
 
-  Future<void> saveThemeMode(String mode) => _setMeta('theme_mode', mode);
+  /// Punkt 8.4: Sprache ('de' | 'en').
+  Future<String> loadLanguage() async => await _meta('language') ?? 'de';
+  Future<void> saveLanguage(String code) async {
+    await _setMeta('language', code);
+    Repo.bump();
+  }
+  // ---------- Punkt 8.3: Slide-Sichtbarkeit & Reihenfolge ----------
+
+  Future<List<SlideCfg>> loadSlides() async {
+    final v = await _meta('slides_cfg');
+    if (v == null) return [for (final s in kAllSlides) SlideCfg(s)];
+    final saved = [
+      for (final e in jsonDecode(v) as List)
+        SlideCfg.fromJson((e as Map).cast<String, dynamic>())
+    ];
+    // Neue Slides hinzufügen, unbekannte entfernen, home nie versteckt.
+    final result = [
+      for (final s in saved)
+        if (kAllSlides.contains(s.id)) s,
+    ];
+    for (final id in kAllSlides) {
+      if (result.every((s) => s.id != id)) result.add(SlideCfg(id));
+    }
+    for (final s in result) {
+      if (s.id == 'home') s.visible = true;
+    }
+    return result;
+  }
+
+  Future<void> saveSlides(List<SlideCfg> slides) async {
+    for (final s in slides) {
+      if (s.id == 'home') s.visible = true;
+    }
+    await _setMeta('slides_cfg', jsonEncode([for (final s in slides) s.toJson()]));
+    Repo.bump();
+  }
+
+  // ---------- Punkt 10.2: Gruppen an/aus (Tageserfassung / Migräne) ----------
+
+  Future<bool> groupEnabled(int group) async =>
+      await _meta('group_enabled_g$group') != '0';
+
+  Future<void> saveGroupEnabled(int group, bool on) async {
+    await _setMeta('group_enabled_g$group', on ? '1' : '0');
+    Repo.bump();
+  }
 
   // ---------- Graphen ----------
 
@@ -358,9 +459,7 @@ class PhaskaDb {
 
   Future<void> saveGraphDef(GraphDef g, {bool notify = true}) async {
     final db = await database;
-    await db
-        .into(db.graphDefs)
-        .insert(_graphToCompanion(g), mode: InsertMode.replace);
+    await db.into(db.graphDefs).insert(_graphToCompanion(g), mode: InsertMode.replace);
     if (notify) Repo.bump();
   }
 
@@ -371,15 +470,13 @@ class PhaskaDb {
   }
 
   Future<bool> graphsSeeded() async => await _meta('graphs_seeded') == '1';
-
   Future<void> markGraphsSeeded() => _setMeta('graphs_seeded', '1');
 
-  // ---------- Einzelerfassung (Schnellmessungen) ----------
+  // ---------- Einzelerfassung ----------
 
   Future<int> insertQuick(QuickValue q) async {
     final db = await database;
     final id = await db.into(db.quickValues).insert(_quickToCompanion(q));
-    await applyQuickAggregate(q.defKey, q.createdAt);
     Repo.bump();
     unawaited(autosave());
     return id;
@@ -389,16 +486,13 @@ class PhaskaDb {
     final db = await database;
     await (db.update(db.quickValues)..where((t) => t.id.equals(q.id ?? -1)))
         .write(_quickToCompanion(q));
-    await applyQuickAggregate(q.defKey, q.createdAt);
     Repo.bump();
     unawaited(autosave());
   }
 
   Future<void> deleteQuick(QuickValue q) async {
     final db = await database;
-    await (db.delete(db.quickValues)..where((t) => t.id.equals(q.id ?? -1)))
-        .go();
-    await applyQuickAggregate(q.defKey, q.createdAt);
+    await (db.delete(db.quickValues)..where((t) => t.id.equals(q.id ?? -1))).go();
     Repo.bump();
     unawaited(autosave());
   }
@@ -413,49 +507,17 @@ class PhaskaDb {
 
   Future<List<String>> quickKeys() async {
     final v = await _meta('quick_keys');
-    return v == null
-        ? const []
-        : [for (final e in jsonDecode(v) as List) '$e'];
+    return v == null ? const [] : [for (final e in jsonDecode(v) as List) '$e'];
   }
 
-  Future<void> saveQuickKeys(List<String> keys) =>
-      _setMeta('quick_keys', jsonEncode(keys));
-
-  bool _sameDay(DateTime a, DateTime b) =>
-      a.year == b.year && a.month == b.month && a.day == b.day;
-
-
-  /// Rechnet Schnellmessungen + den händisch erfassten Tageswert (falls
-  /// vorhanden) zu einem gemeinsamen Durchschnitt und schreibt ihn in den
-  /// Tageseintrag zurück – inkl. Marker, damit er beim nächsten Mal nicht
-  /// doppelt zählt (Punkt 5).
-  Future<void> applyQuickAggregate(String defKey, DateTime day) async {
-    final qs = await allQuick();
-    final vals = qs
-        .where((v) => v.defKey == defKey && _sameDay(v.createdAt, day))
-        .map((v) => v.value)
-        .toList();
-    final defsById = {for (final d in await fieldDefs()) d.id: d};
-    final e =
-        (await all()).where((x) => _sameDay(x.createdAt, day)).firstOrNull;
-    if (e == null) return; // kein Tageseintrag → nur Einzeltabelle
-    final base = entryBaseValue(e, defKey, defsById);
-    final combined = [...vals, if (base != null) base];
-    if (combined.isEmpty) return;
-    final avg = combined.reduce((a, b) => a + b) / combined.length;
-    setEntryValueForKey(e, defKey, avg, defsById);
-    // Marker merken: Dieser Wert stammt jetzt aus dem Aggregat.
-    final written = entryValueForKey(e, defKey, defsById);
-    final qw = quickWritten(e);
-    if (written != null) qw[defKey] = written;
-    e.custom['_qw'] = qw;
-    await update(e);
+  Future<void> saveQuickKeys(List<String> keys) async {
+    await _setMeta('quick_keys', jsonEncode(keys));
+    Repo.bump();
   }
 
-  /// Tages-Aggregate aller Schnellmessungen: dayKey -> defKey -> QuickAgg.
-  /// NEU (Punkt 5): Handelt es sich am Tageseintrag um einen eigenständig
-  /// erfassten Wert (kein zurückgeschriebener Ø), zählt er als zusätzliche
-  /// Messung mit in Ø, Min, Max und Anzahl.
+
+  /// Tages-Aggregate: dayKey -> defKey -> QuickAgg. Ein händisch erfasster
+  /// Tageswert zählt als zusätzliche Messung (Punkt 2, ohne Rückschreibung).
   Future<Map<String, Map<String, QuickAgg>>> quickDayAgg() async {
     final qs = await allQuick();
     if (qs.isEmpty) return const {};
@@ -475,7 +537,6 @@ class PhaskaDb {
         );
       }
     }
-    // Tageswerte einrechnen.
     final defsById = {for (final d in await fieldDefs()) d.id: d};
     for (final e in await all()) {
       final m = out[dayKeyOf(e.createdAt)];
@@ -496,41 +557,113 @@ class PhaskaDb {
     return out;
   }
 
-  // ---------- Einzelerfassung: Farbe & Deko (Punkt 1) ----------
-
   Future<int> loadQuickColor() async =>
       int.tryParse(await _meta('color_g3') ?? '') ?? kDefaultQuickColor;
 
   Future<String> loadQuickTheme() async => await _meta('quick_theme') ?? 'urwald';
+  Future<void> saveQuickTheme(String t) async {
+    await _setMeta('quick_theme', t);
+    Repo.bump();
+  }
 
-  Future<void> saveQuickTheme(String t) => _setMeta('quick_theme', t);
+  // ---------- Lösch-Sperre & gelöschte Standards ----------
 
-  // ---------- Lösch-Sperre & gelöschte Standards (Punkte 4.1/4.3) ----------
-
-  /// IDs, deren Mülleimer freigeschaltet ist. Alles andere gilt als gesperrt.
   Future<Set<String>> unlockedPoints() async {
     final v = await _meta('unlocked_points');
     return v == null ? {} : {for (final e in jsonDecode(v) as List) '$e'};
   }
 
-  Future<void> saveUnlockedPoints(Set<String> ids) =>
-      _setMeta('unlocked_points', jsonEncode(ids.toList()));
+  Future<void> saveUnlockedPoints(Set<String> ids) async {
+    await _setMeta('unlocked_points', jsonEncode(ids.toList()));
+    Repo.bump();
+  }
 
   Future<Set<String>> deletedBuiltins(int group) async {
     final v = await _meta('deleted_g$group');
     return v == null ? {} : {for (final e in jsonDecode(v) as List) '$e'};
   }
 
-  Future<void> saveDeletedBuiltins(int group, Set<String> ids) =>
-      _setMeta('deleted_g$group', jsonEncode(ids.toList()));
+  Future<void> saveDeletedBuiltins(int group, Set<String> ids) async {
+    await _setMeta('deleted_g$group', jsonEncode(ids.toList()));
+    Repo.bump();
+  }
 
-  // ---------- Onboarding (Punkt 7) ----------
+  // ---------- Onboarding ----------
 
   Future<bool> isOnboarded() async => await _meta('onboarded') == '1';
-
   Future<void> markOnboarded() => _setMeta('onboarded', '1');
 
-  // ---------- Konfiguration exportieren/importieren (Punkt 4.3) ----------
+  // ---------- Demo-Daten fürs Tutorial (Punkt 10) ----------
+
+  final List<int> _demoEntryIds = [];
+  final List<int> _demoQuickIds = [];
+
+  /// Legt Beispielwerte mit positivem Verlauf an (nur Tutorial).
+  Future<void> insertDemoData() async {
+    await clearDemoData();
+    final now = DateTime.now();
+    final hidden = await hiddenBuiltins(1);
+    for (var i = 13; i >= 0; i--) {
+      final day = DateTime(now.year, now.month, now.day - i, 20);
+      final t = (13 - i) / 13; // 0 → 1 = positiver Verlauf
+      final e = PhaskaEntry.empty()
+        ..createdAt = day
+        ..custom['_demo'] = 1;
+      if (!hidden.contains('wohlbefinden')) {
+        e.wohlbefinden = (45 + t * 40).round();
+      }
+      if (!hidden.contains('schlaf')) e.schlafStunden = 5.5 + t * 2;
+      if (!hidden.contains('unruhe')) e.innereUnruhe = 8.0 - t * 5;
+      if (i == 11 || i == 4) {
+        e.migraeneIntensitaet = i == 11 ? 6 : 4;
+        e.migraeneStart = '14:00';
+        e.migraeneEnde = '20:30';
+      }
+      final id = await insertRaw(e);
+      _demoEntryIds.add(id);
+    }
+    // Einzelwerte über die Woche (falls ein Schnellschlüssel existiert).
+    final keys = await quickKeys();
+    if (keys.isNotEmpty) {
+      final k = keys.first;
+      final labelKey = k.contains('::') ? k.split('::').first : k;
+      for (var i = 6; i >= 0; i--) {
+        for (var j = 0; j < 3; j++) {
+          final q = QuickValue(
+            defKey: k,
+            label: labelKey,
+            value: (50 + (6 - i) * 5 + j * 4).toDouble(),
+            createdAt: DateTime(now.year, now.month, now.day - i, 9 + j * 4),
+          );
+          final db = await database;
+          final id = await db.into(db.quickValues).insert(_quickToCompanion(q));
+          _demoQuickIds.add(id);
+        }
+      }
+    }
+    Repo.bump();
+  }
+
+  Future<void> clearDemoData() async {
+    final db = await database;
+    for (final id in _demoEntryIds) {
+      await (db.delete(db.entries)..where((t) => t.id.equals(id))).go();
+    }
+    _demoEntryIds.clear();
+    for (final id in _demoQuickIds) {
+      await (db.delete(db.quickValues)..where((t) => t.id.equals(id))).go();
+    }
+    _demoQuickIds.clear();
+    // Sicherheitsnetz bei App-Abbruch während des Tutorials:
+    for (final e in await all()) {
+      if (e.custom['_demo'] == 1 && e.id != null) {
+        await (db.delete(db.entries)..where((t) => t.id.equals(e.id!))).go();
+      }
+    }
+    Repo.bump();
+  }
+
+  // ---------- Konfiguration exportieren/importieren ----------
 
   Future<String> exportConfigJson(
       List<String> orderG1, List<String> orderG2) async {
@@ -543,15 +676,22 @@ class PhaskaDb {
         'deleted': (await deletedBuiltins(g)).toList(),
         'labels': await builtinLabels(g),
         'themes': await builtinThemes(g),
+        'enabled': await groupEnabled(g),
       };
     }
     final cfg = <String, Object?>{
       'app': 'fasy',
       'kind': 'config',
-      'version': 5,
-      'colors': {'g1': c1, 'g2': c2, 'g3': await loadQuickColor()},
+      'version': 6,
+      'colors': {
+        'g1': c1, 'g2': c2,
+        'g3': await loadQuickColor(),
+        'g4': await loadAttackEndColor(),
+      },
       'themeMode': await loadThemeMode(),
+      'language': await loadLanguage(),
       'quickTheme': await loadQuickTheme(),
+      'slides': [for (final s in await loadSlides()) s.toJson()],
       'homeDecos': [for (final d in await loadHomeDecos()) d.toJson()],
       'fieldDefs': [for (final d in await fieldDefs()) d.toMap()],
       'graphDefs': [for (final g in await graphDefs()) g.toMap()],
@@ -562,7 +702,6 @@ class PhaskaDb {
     return const JsonEncoder.withIndent('  ').convert(cfg);
   }
 
-  /// Übernimmt eine fasyconfig-Datei. Erfasste Daten bleiben unberührt.
   Future<void> importConfigJson(String text) async {
     final m = (jsonDecode(text) as Map).cast<String, dynamic>();
     List<String> strList(Object? v) =>
@@ -573,13 +712,22 @@ class PhaskaDb {
 
     final colors = (m['colors'] as Map?)?.cast<String, dynamic>();
     if (colors != null) {
-      if (colors['g1'] is num) await saveColor(1, (colors['g1'] as num).toInt());
-      if (colors['g2'] is num) await saveColor(2, (colors['g2'] as num).toInt());
-      if (colors['g3'] is num) await saveColor(3, (colors['g3'] as num).toInt());
+      for (final g in ['1', '2', '3', '4']) {
+        if (colors['g$g'] is num) {
+          await saveColor(int.parse(g), (colors['g$g'] as num).toInt());
+        }
+      }
     }
     if (m['themeMode'] is String) await saveThemeMode(m['themeMode'] as String);
+    if (m['language'] is String) await saveLanguage(m['language'] as String);
     if (m['quickTheme'] is String) {
       await saveQuickTheme(m['quickTheme'] as String);
+    }
+    if (m['slides'] is List) {
+      await saveSlides([
+        for (final e in m['slides'] as List)
+          SlideCfg.fromJson((e as Map).cast<String, dynamic>())
+      ]);
     }
     if (m['homeDecos'] is List) {
       await saveHomeDecos([
@@ -610,7 +758,7 @@ class PhaskaDb {
       for (final g in incoming) {
         await saveGraphDef(g, notify: false);
       }
-      await markGraphsSeeded(); // nicht erneut seeden
+      await markGraphsSeeded();
     }
     final groups = (m['groups'] as Map?)?.cast<String, dynamic>();
     if (groups != null) {
@@ -627,6 +775,7 @@ class PhaskaDb {
         }
         if (gm['labels'] is Map) await saveBuiltinLabels(g, strMap(gm['labels']));
         if (gm['themes'] is Map) await saveBuiltinThemes(g, strMap(gm['themes']));
+        if (gm['enabled'] is bool) await saveGroupEnabled(g, gm['enabled'] as bool);
       }
     }
     if (m['quickKeys'] is List) await saveQuickKeys(strList(m['quickKeys']));
@@ -640,7 +789,6 @@ class PhaskaDb {
   Future<List<HomeDeco>> loadHomeDecos() async {
     final v = await _meta('home_decos');
     if (v == null) {
-      // Werkszustand = bisheriges Design
       return [
         HomeDeco(theme: 'urwald', position: 'topRight'),
         HomeDeco(theme: 'urwald', position: 'bottomLeft'),
@@ -652,13 +800,14 @@ class PhaskaDb {
     ];
   }
 
-  Future<void> saveHomeDecos(List<HomeDeco> d) =>
-      _setMeta('home_decos', jsonEncode([for (final x in d) x.toJson()]));
+  Future<void> saveHomeDecos(List<HomeDeco> d) async {
+    await _setMeta('home_decos', jsonEncode([for (final x in d) x.toJson()]));
+    Repo.bump();
+  }
 }
 
-// ---------------- CSV-Export (jamovi) ----------------
+// ---------------- CSV-Export ----------------
 
-/// Spalten-Definitionen inkl. Gruppenzugehörigkeit (null = neutral).
 List<({String label, int? group})> csvColumnDefs(List<FieldDef> defs,
     [List<String> quickKeys = const []]) {
   final defsById = {for (final d in defs) d.id: d};
@@ -667,6 +816,7 @@ List<({String label, int? group})> csvColumnDefs(List<FieldDef> defs,
     (label: 'Wohlbefinden (1-100) (T)', group: 1),
     (label: 'Schlaf (h) (T)', group: 1),
     (label: 'Elvanse (mg) (T)', group: 1),
+    (label: 'Elvanse Uhrzeit (T)', group: 1), // Punkt 5
     (label: 'Innere Unruhe (0-10) (T)', group: 1),
     (label: 'Medikinet (mg) (T)', group: 1),
     (label: 'Medikinet Uhrzeit (T)', group: 1),
@@ -687,6 +837,7 @@ List<({String label, int? group})> csvColumnDefs(List<FieldDef> defs,
               : '${d.label} ${inp.label}${d.group == 1 ? ' (T)' : ' (M)'}',
           group: d.group
         ),
+    // Punkt 2: Durchschnitt bleibt gesonderter Tabellenpunkt.
     for (final k in quickKeys) ...[
       (label: '${keyLabel(k, defsById)} Tages-Ø', group: 3),
       (label: '${keyLabel(k, defsById)} Tages-Min', group: 3),
@@ -695,8 +846,7 @@ List<({String label, int? group})> csvColumnDefs(List<FieldDef> defs,
   ];
 }
 
-List<String> csvHeaders(List<FieldDef> defs,
-        [List<String> quickKeys = const []]) =>
+List<String> csvHeaders(List<FieldDef> defs, [List<String> quickKeys = const []]) =>
     [for (final c in csvColumnDefs(defs, quickKeys)) c.label];
 
 String _csvCell(Object? v) {
@@ -715,9 +865,8 @@ List<String> csvRow(PhaskaEntry e, List<FieldDef> defs,
       _csvCell(DateFormat('dd.MM.yyyy HH:mm').format(e.createdAt)),
       _csvCell(e.wohlbefinden),
       _csvCell(e.schlafStunden?.toStringAsFixed(1)),
-      _csvCell(e.elvanseMg == null
-          ? null
-          : (e.elvanseMg == 0 ? 'keine' : e.elvanseMg)),
+      _csvCell(e.elvanseMg == null ? null : (e.elvanseMg == 0 ? 'keine' : e.elvanseMg)),
+      _csvCell(e.elvanseZeit), // Punkt 5
       _csvCell(e.innereUnruhe?.toStringAsFixed(1)),
       _csvCell(e.medikinetMg == null
           ? null
@@ -733,8 +882,7 @@ List<String> csvRow(PhaskaEntry e, List<FieldDef> defs,
       _csvCell(e.notizen),
       _csvCell(e.migraeneTag),
       for (final d in defs)
-        for (final inp in d.inputs)
-          _csvCell(_customCsv(customSubValue(e, d, inp))),
+        for (final inp in d.inputs) _csvCell(_customCsv(customSubValue(e, d, inp))),
       for (final k in quickKeys) ...[
         _csvCell(agg[dayKeyOf(e.createdAt)]?[k]?.avg.toStringAsFixed(1)),
         _csvCell(agg[dayKeyOf(e.createdAt)]?[k]?.min.toStringAsFixed(1)),
@@ -745,10 +893,7 @@ List<String> csvRow(PhaskaEntry e, List<FieldDef> defs,
 String _customCsv(Object? v) =>
     v == null ? '' : (v is double ? v.toStringAsFixed(1) : '$v');
 
-/// Baut den kompletten CSV-Text (Semikolon, jamovi-Format) im Speicher.
-/// Plattformunabhängig – das Rauschreiben übernimmt das FilesGateway.
-Future<String> buildCsvContent(
-    List<PhaskaEntry> entries, List<FieldDef> defs) async {
+Future<String> buildCsvContent(List<PhaskaEntry> entries, List<FieldDef> defs) async {
   final keys = await PhaskaDb.instance.quickKeys();
   final agg = keys.isEmpty
       ? const <String, Map<String, QuickAgg>>{}
@@ -760,33 +905,53 @@ Future<String> buildCsvContent(
   return b.toString();
 }
 
+/// Punkt 2: Einzelerfassungstabelle als eigene CSV.
+String buildQuickCsvContent(List<QuickValue> quick) {
+  final b = StringBuffer()..writeln('Zeit;Schluessel;Wert');
+  for (final q in quick.reversed) {
+    b.writeln('${DateFormat('dd.MM.yyyy HH:mm').format(q.createdAt)};'
+        '${_csvCell(q.label)};${q.value.toStringAsFixed(1)}');
+  }
+  return b.toString();
+}
+
 Future<void> shareCsv(List<PhaskaEntry> entries, List<FieldDef> defs) async {
   final content = await buildCsvContent(entries, defs);
   final stamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
-  await filesGateway.share(
-    'fasy_export_$stamp.csv',
-    utf8.encode(content),
-    mime: 'text/csv',
-    text: 'fasy Export (CSV für jamovi)',
-  );
+  await filesGateway.share('fasy_export_$stamp.csv', utf8.encode(content),
+      mime: 'text/csv', text: 'fasy Export (CSV für jamovi)');
 }
 
-/// Speichert die CSV dauerhaft (nativ: Download-Ordner; Web: Browser-Download).
-Future<String?> saveCsvLocally(
-    List<PhaskaEntry> entries, List<FieldDef> defs) async {
+/// Punkt 2: Großer Export-Knopf teilt BEIDE Tabellen (Erfassungen + Einzelwerte).
+Future<int> shareCsvBundle(List<PhaskaEntry> entries, List<FieldDef> defs) async {
+  final stamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
+  final files = <(String, List<int>, String)>[
+    (
+      'fasy_export_$stamp.csv',
+      utf8.encode(await buildCsvContent(entries, defs)),
+      'text/csv'
+    ),
+  ];
+  final quick = await PhaskaDb.instance.allQuick();
+  if (quick.isNotEmpty) {
+    files.add(('fasy_einzel_$stamp.csv',
+        utf8.encode(buildQuickCsvContent(quick)), 'text/csv'));
+  }
+  await filesGateway.shareMany(files, text: 'fasy Export (CSV)');
+  return files.length;
+}
+
+Future<String?> saveCsvLocally(List<PhaskaEntry> entries, List<FieldDef> defs) async {
   final content = await buildCsvContent(entries, defs);
   final stamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
   return filesGateway.saveLocally(
       'fasy_export_$stamp.csv', utf8.encode(content), 'text/csv');
 }
 
-// ---------------- Autosave (Punkt 6) ----------------
+// ---------------- Autosave ----------------
 
 bool _autosaveRunning = false;
 
-/// Schreibt nach jeder Änderung zeitgestempelte Exporte.
-/// Nativ: App-interner Ordner „autosave" (wie bisher).
-/// Web: No-Op (Persistenz liegt in der Browser-Datenbank).
 Future<void> autosave() async {
   if (_autosaveRunning) return;
   _autosaveRunning = true;
@@ -804,19 +969,12 @@ Future<void> autosave() async {
     for (final e in entries) {
       b.writeln(csvRow(e, defs, keys, agg).join(';'));
     }
-    await filesGateway.autosave(
-        'fasy_autosave_$stamp.csv', utf8.encode(b.toString()));
+    await filesGateway.autosave('fasy_autosave_$stamp.csv', utf8.encode(b.toString()));
 
     final qs = await PhaskaDb.instance.allQuick();
     if (qs.isNotEmpty) {
-      final qb = StringBuffer()..writeln('Zeit;Schluessel;Wert');
-      for (final q in qs.reversed) {
-        qb.writeln(
-            '${DateFormat('dd.MM.yyyy HH:mm').format(q.createdAt)};'
-            '${_csvCell(q.label)};${q.value.toStringAsFixed(1)}');
-      }
       await filesGateway.autosave(
-          'fasy_einzel_$stamp.csv', utf8.encode(qb.toString()));
+          'fasy_einzel_$stamp.csv', utf8.encode(buildQuickCsvContent(qs)));
     }
   } catch (_) {
     // Autosave darf die App nie abstürzen lassen.
@@ -827,9 +985,8 @@ Future<void> autosave() async {
 
 // ---------------- CSV-Import ----------------
 
-/// Zerlegt CSV-Text (Semikolon) in Zeilen/Zellen; respektiert "..."-Zitate.
 List<List<String>> _parseCsv(String text) {
-  if (text.startsWith('﻿')) text = text.substring(1); // BOM weg
+  if (text.startsWith('﻿')) text = text.substring(1);
   final rows = <List<String>>[];
   var row = <String>[];
   final cell = StringBuffer();
@@ -868,14 +1025,9 @@ List<List<String>> _parseCsv(String text) {
   return rows;
 }
 
-/// Entfernt das (T)/(M)-Gruppensuffix am Ende (erkennt alte phaska- und
-/// neue fasy-Header gleichermaßen).
 String _stripGroupSuffix(String h) =>
     h.trim().replaceAll(RegExp(r'\s*\((T|M)\)\s*$'), '').trim();
 
-/// Spaltenname -> interner Schlüssel:
-/// 'created', 'ignore', Basis-Schlüssel ('wohlbefinden' …),
-/// 'c::<defId>::<subkey>' für eigene Datenpunkte, null = unbekannt.
 String? _baseKeyForColumn(String column, List<FieldDef> defs) {
   final low = _stripGroupSuffix(column).toLowerCase();
   const base = <String, String>{
@@ -883,6 +1035,7 @@ String? _baseKeyForColumn(String column, List<FieldDef> defs) {
     'wohlbefinden (1-100)': 'wohlbefinden',
     'schlaf (h)': 'schlaf_stunden',
     'elvanse (mg)': 'elvanse_mg',
+    'elvanse uhrzeit': 'elvanse_zeit', // Punkt 5
     'innere unruhe (0-10)': 'innere_unruhe',
     'medikinet (mg)': 'medikinet_mg',
     'medikinet uhrzeit': 'medikinet_zeit',
@@ -894,17 +1047,13 @@ String? _baseKeyForColumn(String column, List<FieldDef> defs) {
     'ausloeser': 'ausloeser',
     'begleitsymptome': 'begleitsymptome',
     'notizen': 'notizen',
-    'migraenetag': 'ignore', // wird beim Import neu aus Intensität abgeleitet
+    'migraenetag': 'ignore',
   };
   final direct = base[low];
   if (direct != null) return direct;
-  // Aggregate der Einzelerfassung: beim Import ignorieren (werden gerechnet)
-  if (low.endsWith(' tages-ø') ||
-      low.endsWith(' tages-min') ||
-      low.endsWith(' tages-max')) {
+  if (low.endsWith(' tages-ø') || low.endsWith(' tages-min') || low.endsWith(' tages-max')) {
     return 'ignore';
   }
-  // Eigene Datenpunkte: '<DefLabel>' bzw. '<DefLabel> <InputLabel>'
   for (final d in defs) {
     final dl = d.label.toLowerCase();
     if (!low.startsWith(dl)) continue;
@@ -930,14 +1079,12 @@ double? _csvToDouble(String s) {
 
 int? _csvToInt(String s) => _csvToDouble(s)?.round();
 
-/// 'dd.MM.yyyy HH:mm' (Exportformat) oder ISO – sonst null.
 DateTime? _parseEntryDate(String s) {
   final t = s.trim();
   if (t.isEmpty) return null;
   final iso = DateTime.tryParse(t);
   if (iso != null) return iso;
-  final m = RegExp(r'^(\d{1,2})\.(\d{1,2})\.(\d{4})\s+(\d{1,2}):(\d{2})')
-      .firstMatch(t);
+  final m = RegExp(r'^(\d{1,2})\.(\d{1,2})\.(\d{4})\s+(\d{1,2}):(\d{2})').firstMatch(t);
   if (m == null) return null;
   return DateTime(int.parse(m[3]!), int.parse(m[2]!), int.parse(m[1]!),
       int.parse(m[4]!), int.parse(m[5]!));
@@ -955,15 +1102,16 @@ void _applyBaseValue(
       e.schlafStunden = _csvToDouble(cell);
       break;
     case 'elvanse_mg':
-      e.elvanseMg =
-          cell.trim().toLowerCase() == 'keine' ? 0 : _csvToInt(cell);
+      e.elvanseMg = cell.trim().toLowerCase() == 'keine' ? 0 : _csvToInt(cell);
+      break;
+    case 'elvanse_zeit': // Punkt 5
+      e.elvanseZeit = cell.trim();
       break;
     case 'innere_unruhe':
       e.innereUnruhe = _csvToDouble(cell);
       break;
     case 'medikinet_mg':
-      e.medikinetMg =
-          cell.trim().toLowerCase() == 'keine' ? 0 : _csvToInt(cell);
+      e.medikinetMg = cell.trim().toLowerCase() == 'keine' ? 0 : _csvToInt(cell);
       break;
     case 'medikinet_zeit':
       e.medikinetZeit = cell.trim();
@@ -994,7 +1142,7 @@ void _applyBaseValue(
       break;
     default:
       if (key.startsWith('c::')) {
-        final p = key.split('::'); // c :: defId :: subkey
+        final p = key.split('::');
         final d = defs.where((x) => x.id == p[1]).firstOrNull;
         final inp = d?.inputs.where((i) => i.subkey == p[2]).firstOrNull;
         if (d != null && inp != null) {
@@ -1009,19 +1157,14 @@ void _applyBaseValue(
   }
 }
 
-/// Importiert Semikolon-CSV (fasy-/phaska-Exportformat).
-/// Rückgabe: (neu importiert, übersprungen, unbekannte Spalten).
-Future<(int, int, List<String>)> importCsv(
-    String csvText, List<FieldDef> defs) async {
+Future<(int, int, List<String>)> importCsv(String csvText, List<FieldDef> defs) async {
   final rows = _parseCsv(csvText);
   if (rows.length < 2) return (0, 0, const <String>[]);
   final headers = rows.first;
   final keys = [for (final h in headers) _baseKeyForColumn(h, defs)];
 
   final existing = await PhaskaDb.instance.all();
-  final stamps = {
-    for (final e in existing) e.createdAt.toIso8601String().substring(0, 16)
-  };
+  final stamps = {for (final e in existing) e.createdAt.toIso8601String().substring(0, 16)};
 
   final unknown = <String>[];
   for (var i = 0; i < headers.length; i++) {

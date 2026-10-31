@@ -18,6 +18,7 @@ class Entries extends Table {
   IntColumn get wohlbefinden => integer().nullable()();
   RealColumn get schlafStunden => real().nullable().named('schlaf_stunden')();
   IntColumn get elvanseMg => integer().nullable().named('elvanse_mg')();
+  TextColumn get elvanseZeit => text().nullable().named('elvanse_zeit')();
   RealColumn get innereUnruhe => real().nullable().named('innere_unruhe')();
   IntColumn get medikinetMg => integer().nullable().named('medikinet_mg')();
   TextColumn get medikinetZeit => text().nullable().named('medikinet_zeit')();
@@ -89,6 +90,7 @@ const _sqlCreateEntries = '''
         wohlbefinden INTEGER,
         schlaf_stunden REAL,
         elvanse_mg INTEGER,
+        elvanse_zeit TEXT,
         innere_unruhe REAL,
         medikinet_mg INTEGER,
         medikinet_zeit TEXT,
@@ -129,7 +131,7 @@ class FasyDatabase extends _$FasyDatabase {
   /// Versions-Kontinuität: sqflite endete bei 4 → drift startet bei 5.
   /// Geräte mit v4 laufen durch ein No-Op-Upgrade, Daten bleiben liegen.
   @override
-  int get schemaVersion => 5;
+  int get schemaVersion => 6;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -163,6 +165,11 @@ class FasyDatabase extends _$FasyDatabase {
           }
           // 4 → 5: bewusst NICHTS. Reine Versionsanhebung für die
           // drift-Übernahme. Die S23-Bestandsdaten bleiben unangetastet.
+                    if (from < 6) {
+            // Punkt 5: Elvanse bekommt eine Uhrzeit (wie Medikinet).
+            await m.database.customStatement(
+                'ALTER TABLE entries ADD COLUMN elvanse_zeit TEXT');
+          }
         },
       );
 }

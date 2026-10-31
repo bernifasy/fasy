@@ -6,7 +6,10 @@ import 'package:intl/intl.dart';
 
 import 'capture/capture_flow.dart';
 import 'db.dart';
+import 'l10n.dart';
 import 'models.dart';
+import 'onboarding.dart' show kKeyExportFab;
+import 'widgets.dart';
 
 class TableScreen extends StatefulWidget {
   const TableScreen({super.key});
@@ -22,6 +25,9 @@ class _TableScreenState extends State<TableScreen> {
   Map<String, Map<String, QuickAgg>> _agg = const {};
   bool _busy = false;
 
+  /// Punkt 3: nur diese Leiste scrollt die Tabelle horizontal.
+  final _hCtrl = ScrollController();
+
   @override
   void initState() {
     super.initState();
@@ -32,6 +38,7 @@ class _TableScreenState extends State<TableScreen> {
   @override
   void dispose() {
     Repo.changes.removeListener(_load);
+    _hCtrl.dispose();
     super.dispose();
   }
 
@@ -65,6 +72,7 @@ class _TableScreenState extends State<TableScreen> {
       e.elvanseMg == null
           ? '—'
           : (e.elvanseMg == 0 ? 'keine' : '${e.elvanseMg}'),
+      e.elvanseZeit ?? '—', // Punkt 5
       e.innereUnruhe == null ? '—' : fmtDe(e.innereUnruhe!),
       e.medikinetMg == null
           ? '—'
@@ -81,6 +89,7 @@ class _TableScreenState extends State<TableScreen> {
       e.migraeneTag,
       for (final d in _defs)
         for (final inp in d.inputs) fmtOne(customSubValue(e, d, inp)),
+      // Punkt 2: Durchschnitt bleibt eigener Tabellenpunkt.
       for (final k in _quickKeys) ...[
         aggCell(k, (a) => a.avg),
         aggCell(k, (a) => a.min),
@@ -226,7 +235,7 @@ class _TableScreenState extends State<TableScreen> {
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
             child: Row(children: [
-              Text('Alle Erfassungen',
+              Text(S.t('screen_table'),
                   style: theme.textTheme.headlineSmall
                       ?.copyWith(fontWeight: FontWeight.bold)),
               const Spacer(),
@@ -239,7 +248,8 @@ class _TableScreenState extends State<TableScreen> {
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
               child: Text(
-                  'Lange auf eine Zeile drücken: bearbeiten oder löschen.',
+                  'Lange auf eine Zeile drücken: bearbeiten oder löschen. '
+                  'Die Leiste ganz unten verschiebt die Tabelle seitlich.',
                   style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant)),
             ),
@@ -250,79 +260,107 @@ class _TableScreenState extends State<TableScreen> {
                     ? Center(
                         child: Text('Noch keine Daten erfasst.',
                             style: theme.textTheme.bodyLarge))
-                    : SingleChildScrollView(
-                        padding: const EdgeInsets.only(bottom: 110),
-                        child: SingleChildScrollView(
-                          scrollDirection: Axis.horizontal,
-                          padding:
-                              const EdgeInsets.symmetric(horizontal: 8),
-                          child: DataTable(
-                            columnSpacing: 14,
-                            horizontalMargin: 8,
-                            headingRowHeight: 44,
-                            dataRowMinHeight: 40,
-                            dataRowMaxHeight: 64,
-                            columns: [
-                              for (final (i, c) in cols.indexed)
-                                DataColumn(
-                                  label: Container(
-                                    color: i.isOdd
-                                        ? stripe
-                                        : Colors.transparent,
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 4, vertical: 4),
-                                    child: Text(c.label,
-                                        style: theme.textTheme.labelSmall
-                                            ?.copyWith(
-                                          fontWeight: FontWeight.bold,
-                                          color: c.group == null
-                                              ? null
-                                              : groupColor(c.group!),
-                                        )),
-                                  ),
-                                ),
-                            ],
-                            rows: [
-                              for (final e in entries)
-                                DataRow(
-                                  onLongPress: () => _rowOptions(e),
-                                  cells: [
-                                    for (final (i, cell)
-                                        in _displayRow(e).indexed)
-                                      DataCell(
-                                        Container(
-                                          constraints:
-                                              const BoxConstraints(
-                                                  maxWidth: 170,
-                                                  minHeight: 40),
-                                          alignment: Alignment.centerLeft,
-                                          color: i.isOdd
-                                              ? stripe
-                                              : Colors.transparent,
-                                          padding: const EdgeInsets
-                                              .symmetric(horizontal: 4),
-                                          child: Text(
-                                            cell,
-                                            maxLines: 2,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: i == 15 && cell == 'ja'
-                                                ? theme.textTheme.bodySmall
-                                                    ?.copyWith(
-                                                        fontWeight:
-                                                            FontWeight.bold,
-                                                        color: theme
-                                                            .colorScheme.error)
-                                                : theme.textTheme.bodySmall,
-                                          ),
-                                        ),
+                    : Column(children: [
+                        Expanded(
+                          child: SingleChildScrollView(
+                            padding: const EdgeInsets.only(bottom: 16),
+                            child: SingleChildScrollView(
+                              scrollDirection: Axis.horizontal,
+                              controller: _hCtrl,
+                              // Punkt 3: Tabelle reagiert NICHT auf Wischen –
+                              // horizontale Gesten gehen ans PageView.
+                              physics:
+                                  const NeverScrollableScrollPhysics(),
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 8),
+                              child: DataTable(
+                                columnSpacing: 14,
+                                horizontalMargin: 8,
+                                headingRowHeight: 44,
+                                dataRowMinHeight: 40,
+                                dataRowMaxHeight: 64,
+                                columns: [
+                                  for (final (i, c) in cols.indexed)
+                                    DataColumn(
+                                      label: Container(
+                                        color: i.isOdd
+                                            ? stripe
+                                            : Colors.transparent,
+                                        padding:
+                                            const EdgeInsets.symmetric(
+                                                horizontal: 4, vertical: 4),
+                                        child: Text(c.label,
+                                            style: theme
+                                                .textTheme.labelSmall
+                                                ?.copyWith(
+                                              fontWeight: FontWeight.bold,
+                                              color: c.group == null
+                                                  ? null
+                                                  : c.group == 3
+                                                      ? AppColors
+                                                          .quick.value
+                                                      : groupColor(c.group!),
+                                            )),
                                       ),
-                                  ],
-                                ),
-                            ],
+                                    ),
+                                ],
+                                rows: [
+                                  for (final e in entries)
+                                    DataRow(
+                                      onLongPress: () => _rowOptions(e),
+                                      cells: [
+                                        for (final (i, cell)
+                                            in _displayRow(e).indexed)
+                                          DataCell(
+                                            Container(
+                                              constraints:
+                                                  const BoxConstraints(
+                                                      maxWidth: 170,
+                                                      minHeight: 40),
+                                              alignment:
+                                                  Alignment.centerLeft,
+                                              color: i.isOdd
+                                                  ? stripe
+                                                  : Colors.transparent,
+                                              padding: const EdgeInsets
+                                                  .symmetric(horizontal: 4),
+                                              child: Text(
+                                                cell,
+                                                maxLines: 2,
+                                                overflow:
+                                                    TextOverflow.ellipsis,
+                                                style: i == 16 &&
+                                                        cell == 'ja'
+                                                    ? theme
+                                                        .textTheme.bodySmall
+                                                        ?.copyWith(
+                                                            fontWeight:
+                                                                FontWeight
+                                                                    .bold,
+                                                            color: theme
+                                                                .colorScheme
+                                                                .error)
+                                                    : theme.textTheme
+                                                        .bodySmall,
+                                              ),
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+                                ],
+                              ),
+                            ),
                           ),
                         ),
-                      ),
+                      ]),
           ),
+          // Punkt 3: horizontale Scroll-Leiste am unteren Bildschirmrand
+          // (ggf. leer, wenn Tabelle schmal/schmal genug ist).
+          if (entries != null && entries.length > 1)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 96),
+              child: HorizontalScroller(controller: _hCtrl),
+            ),
         ]),
       ),
       floatingActionButton: Row(mainAxisSize: MainAxisSize.min, children: [
@@ -346,12 +384,16 @@ class _TableScreenState extends State<TableScreen> {
         ),
         const SizedBox(width: 12),
         FloatingActionButton.extended(
+          key: kKeyExportFab,
           heroTag: 'share',
+          // Punkt 2: teilt große Tabelle UND Einzelerfassungstabelle.
           onPressed: _busy
               ? null
               : () => _run(
-                    () => shareCsv(_entries!, _defs),
-                    (_) => 'Export geteilt.',
+                    () => shareCsvBundle(_entries!, _defs),
+                    (n) => n == 2
+                        ? 'Beide Tabellen geteilt (Erfassungen + Einzelwerte).'
+                        : 'Export geteilt.',
                   ),
           icon: _busy
               ? const SizedBox(

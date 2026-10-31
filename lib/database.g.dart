@@ -65,6 +65,17 @@ class $EntriesTable extends Entries with TableInfo<$EntriesTable, EntryRow> {
     type: DriftSqlType.int,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _elvanseZeitMeta = const VerificationMeta(
+    'elvanseZeit',
+  );
+  @override
+  late final GeneratedColumn<String> elvanseZeit = GeneratedColumn<String>(
+    'elvanse_zeit',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   static const VerificationMeta _innereUnruheMeta = const VerificationMeta(
     'innereUnruhe',
   );
@@ -215,6 +226,7 @@ class $EntriesTable extends Entries with TableInfo<$EntriesTable, EntryRow> {
     wohlbefinden,
     schlafStunden,
     elvanseMg,
+    elvanseZeit,
     innereUnruhe,
     medikinetMg,
     medikinetZeit,
@@ -274,6 +286,15 @@ class $EntriesTable extends Entries with TableInfo<$EntriesTable, EntryRow> {
       context.handle(
         _elvanseMgMeta,
         elvanseMg.isAcceptableOrUnknown(data['elvanse_mg']!, _elvanseMgMeta),
+      );
+    }
+    if (data.containsKey('elvanse_zeit')) {
+      context.handle(
+        _elvanseZeitMeta,
+        elvanseZeit.isAcceptableOrUnknown(
+          data['elvanse_zeit']!,
+          _elvanseZeitMeta,
+        ),
       );
     }
     if (data.containsKey('innere_unruhe')) {
@@ -416,6 +437,10 @@ class $EntriesTable extends Entries with TableInfo<$EntriesTable, EntryRow> {
         DriftSqlType.int,
         data['${effectivePrefix}elvanse_mg'],
       ),
+      elvanseZeit: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}elvanse_zeit'],
+      ),
       innereUnruhe: attachedDatabase.typeMapping.read(
         DriftSqlType.double,
         data['${effectivePrefix}innere_unruhe'],
@@ -483,6 +508,7 @@ class EntryRow extends DataClass implements Insertable<EntryRow> {
   final int? wohlbefinden;
   final double? schlafStunden;
   final int? elvanseMg;
+  final String? elvanseZeit;
   final double? innereUnruhe;
   final int? medikinetMg;
   final String? medikinetZeit;
@@ -502,6 +528,7 @@ class EntryRow extends DataClass implements Insertable<EntryRow> {
     this.wohlbefinden,
     this.schlafStunden,
     this.elvanseMg,
+    this.elvanseZeit,
     this.innereUnruhe,
     this.medikinetMg,
     this.medikinetZeit,
@@ -529,6 +556,9 @@ class EntryRow extends DataClass implements Insertable<EntryRow> {
     }
     if (!nullToAbsent || elvanseMg != null) {
       map['elvanse_mg'] = Variable<int>(elvanseMg);
+    }
+    if (!nullToAbsent || elvanseZeit != null) {
+      map['elvanse_zeit'] = Variable<String>(elvanseZeit);
     }
     if (!nullToAbsent || innereUnruhe != null) {
       map['innere_unruhe'] = Variable<double>(innereUnruhe);
@@ -583,6 +613,9 @@ class EntryRow extends DataClass implements Insertable<EntryRow> {
       elvanseMg: elvanseMg == null && nullToAbsent
           ? const Value.absent()
           : Value(elvanseMg),
+      elvanseZeit: elvanseZeit == null && nullToAbsent
+          ? const Value.absent()
+          : Value(elvanseZeit),
       innereUnruhe: innereUnruhe == null && nullToAbsent
           ? const Value.absent()
           : Value(innereUnruhe),
@@ -634,6 +667,7 @@ class EntryRow extends DataClass implements Insertable<EntryRow> {
       wohlbefinden: serializer.fromJson<int?>(json['wohlbefinden']),
       schlafStunden: serializer.fromJson<double?>(json['schlafStunden']),
       elvanseMg: serializer.fromJson<int?>(json['elvanseMg']),
+      elvanseZeit: serializer.fromJson<String?>(json['elvanseZeit']),
       innereUnruhe: serializer.fromJson<double?>(json['innereUnruhe']),
       medikinetMg: serializer.fromJson<int?>(json['medikinetMg']),
       medikinetZeit: serializer.fromJson<String?>(json['medikinetZeit']),
@@ -662,6 +696,7 @@ class EntryRow extends DataClass implements Insertable<EntryRow> {
       'wohlbefinden': serializer.toJson<int?>(wohlbefinden),
       'schlafStunden': serializer.toJson<double?>(schlafStunden),
       'elvanseMg': serializer.toJson<int?>(elvanseMg),
+      'elvanseZeit': serializer.toJson<String?>(elvanseZeit),
       'innereUnruhe': serializer.toJson<double?>(innereUnruhe),
       'medikinetMg': serializer.toJson<int?>(medikinetMg),
       'medikinetZeit': serializer.toJson<String?>(medikinetZeit),
@@ -686,6 +721,7 @@ class EntryRow extends DataClass implements Insertable<EntryRow> {
     Value<int?> wohlbefinden = const Value.absent(),
     Value<double?> schlafStunden = const Value.absent(),
     Value<int?> elvanseMg = const Value.absent(),
+    Value<String?> elvanseZeit = const Value.absent(),
     Value<double?> innereUnruhe = const Value.absent(),
     Value<int?> medikinetMg = const Value.absent(),
     Value<String?> medikinetZeit = const Value.absent(),
@@ -707,6 +743,7 @@ class EntryRow extends DataClass implements Insertable<EntryRow> {
         ? schlafStunden.value
         : this.schlafStunden,
     elvanseMg: elvanseMg.present ? elvanseMg.value : this.elvanseMg,
+    elvanseZeit: elvanseZeit.present ? elvanseZeit.value : this.elvanseZeit,
     innereUnruhe: innereUnruhe.present ? innereUnruhe.value : this.innereUnruhe,
     medikinetMg: medikinetMg.present ? medikinetMg.value : this.medikinetMg,
     medikinetZeit: medikinetZeit.present
@@ -744,6 +781,9 @@ class EntryRow extends DataClass implements Insertable<EntryRow> {
           ? data.schlafStunden.value
           : this.schlafStunden,
       elvanseMg: data.elvanseMg.present ? data.elvanseMg.value : this.elvanseMg,
+      elvanseZeit: data.elvanseZeit.present
+          ? data.elvanseZeit.value
+          : this.elvanseZeit,
       innereUnruhe: data.innereUnruhe.present
           ? data.innereUnruhe.value
           : this.innereUnruhe,
@@ -790,6 +830,7 @@ class EntryRow extends DataClass implements Insertable<EntryRow> {
           ..write('wohlbefinden: $wohlbefinden, ')
           ..write('schlafStunden: $schlafStunden, ')
           ..write('elvanseMg: $elvanseMg, ')
+          ..write('elvanseZeit: $elvanseZeit, ')
           ..write('innereUnruhe: $innereUnruhe, ')
           ..write('medikinetMg: $medikinetMg, ')
           ..write('medikinetZeit: $medikinetZeit, ')
@@ -814,6 +855,7 @@ class EntryRow extends DataClass implements Insertable<EntryRow> {
     wohlbefinden,
     schlafStunden,
     elvanseMg,
+    elvanseZeit,
     innereUnruhe,
     medikinetMg,
     medikinetZeit,
@@ -837,6 +879,7 @@ class EntryRow extends DataClass implements Insertable<EntryRow> {
           other.wohlbefinden == this.wohlbefinden &&
           other.schlafStunden == this.schlafStunden &&
           other.elvanseMg == this.elvanseMg &&
+          other.elvanseZeit == this.elvanseZeit &&
           other.innereUnruhe == this.innereUnruhe &&
           other.medikinetMg == this.medikinetMg &&
           other.medikinetZeit == this.medikinetZeit &&
@@ -858,6 +901,7 @@ class EntriesCompanion extends UpdateCompanion<EntryRow> {
   final Value<int?> wohlbefinden;
   final Value<double?> schlafStunden;
   final Value<int?> elvanseMg;
+  final Value<String?> elvanseZeit;
   final Value<double?> innereUnruhe;
   final Value<int?> medikinetMg;
   final Value<String?> medikinetZeit;
@@ -877,6 +921,7 @@ class EntriesCompanion extends UpdateCompanion<EntryRow> {
     this.wohlbefinden = const Value.absent(),
     this.schlafStunden = const Value.absent(),
     this.elvanseMg = const Value.absent(),
+    this.elvanseZeit = const Value.absent(),
     this.innereUnruhe = const Value.absent(),
     this.medikinetMg = const Value.absent(),
     this.medikinetZeit = const Value.absent(),
@@ -897,6 +942,7 @@ class EntriesCompanion extends UpdateCompanion<EntryRow> {
     this.wohlbefinden = const Value.absent(),
     this.schlafStunden = const Value.absent(),
     this.elvanseMg = const Value.absent(),
+    this.elvanseZeit = const Value.absent(),
     this.innereUnruhe = const Value.absent(),
     this.medikinetMg = const Value.absent(),
     this.medikinetZeit = const Value.absent(),
@@ -917,6 +963,7 @@ class EntriesCompanion extends UpdateCompanion<EntryRow> {
     Expression<int>? wohlbefinden,
     Expression<double>? schlafStunden,
     Expression<int>? elvanseMg,
+    Expression<String>? elvanseZeit,
     Expression<double>? innereUnruhe,
     Expression<int>? medikinetMg,
     Expression<String>? medikinetZeit,
@@ -937,6 +984,7 @@ class EntriesCompanion extends UpdateCompanion<EntryRow> {
       if (wohlbefinden != null) 'wohlbefinden': wohlbefinden,
       if (schlafStunden != null) 'schlaf_stunden': schlafStunden,
       if (elvanseMg != null) 'elvanse_mg': elvanseMg,
+      if (elvanseZeit != null) 'elvanse_zeit': elvanseZeit,
       if (innereUnruhe != null) 'innere_unruhe': innereUnruhe,
       if (medikinetMg != null) 'medikinet_mg': medikinetMg,
       if (medikinetZeit != null) 'medikinet_zeit': medikinetZeit,
@@ -961,6 +1009,7 @@ class EntriesCompanion extends UpdateCompanion<EntryRow> {
     Value<int?>? wohlbefinden,
     Value<double?>? schlafStunden,
     Value<int?>? elvanseMg,
+    Value<String?>? elvanseZeit,
     Value<double?>? innereUnruhe,
     Value<int?>? medikinetMg,
     Value<String?>? medikinetZeit,
@@ -981,6 +1030,7 @@ class EntriesCompanion extends UpdateCompanion<EntryRow> {
       wohlbefinden: wohlbefinden ?? this.wohlbefinden,
       schlafStunden: schlafStunden ?? this.schlafStunden,
       elvanseMg: elvanseMg ?? this.elvanseMg,
+      elvanseZeit: elvanseZeit ?? this.elvanseZeit,
       innereUnruhe: innereUnruhe ?? this.innereUnruhe,
       medikinetMg: medikinetMg ?? this.medikinetMg,
       medikinetZeit: medikinetZeit ?? this.medikinetZeit,
@@ -1015,6 +1065,9 @@ class EntriesCompanion extends UpdateCompanion<EntryRow> {
     }
     if (elvanseMg.present) {
       map['elvanse_mg'] = Variable<int>(elvanseMg.value);
+    }
+    if (elvanseZeit.present) {
+      map['elvanse_zeit'] = Variable<String>(elvanseZeit.value);
     }
     if (innereUnruhe.present) {
       map['innere_unruhe'] = Variable<double>(innereUnruhe.value);
@@ -1068,6 +1121,7 @@ class EntriesCompanion extends UpdateCompanion<EntryRow> {
           ..write('wohlbefinden: $wohlbefinden, ')
           ..write('schlafStunden: $schlafStunden, ')
           ..write('elvanseMg: $elvanseMg, ')
+          ..write('elvanseZeit: $elvanseZeit, ')
           ..write('innereUnruhe: $innereUnruhe, ')
           ..write('medikinetMg: $medikinetMg, ')
           ..write('medikinetZeit: $medikinetZeit, ')
@@ -2377,6 +2431,7 @@ typedef $$EntriesTableCreateCompanionBuilder = EntriesCompanion Function({
   Value<int?> wohlbefinden,
   Value<double?> schlafStunden,
   Value<int?> elvanseMg,
+  Value<String?> elvanseZeit,
   Value<double?> innereUnruhe,
   Value<int?> medikinetMg,
   Value<String?> medikinetZeit,
@@ -2397,6 +2452,7 @@ typedef $$EntriesTableUpdateCompanionBuilder = EntriesCompanion Function({
   Value<int?> wohlbefinden,
   Value<double?> schlafStunden,
   Value<int?> elvanseMg,
+  Value<String?> elvanseZeit,
   Value<double?> innereUnruhe,
   Value<int?> medikinetMg,
   Value<String?> medikinetZeit,
@@ -2443,6 +2499,11 @@ class $$EntriesTableFilterComposer
 
   ColumnFilters<int> get elvanseMg => $composableBuilder(
     column: $table.elvanseMg,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get elvanseZeit => $composableBuilder(
+    column: $table.elvanseZeit,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -2546,6 +2607,11 @@ class $$EntriesTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get elvanseZeit => $composableBuilder(
+    column: $table.elvanseZeit,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<double> get innereUnruhe => $composableBuilder(
     column: $table.innereUnruhe,
     builder: (column) => ColumnOrderings(column),
@@ -2639,6 +2705,11 @@ class $$EntriesTableAnnotationComposer
 
   GeneratedColumn<int> get elvanseMg =>
       $composableBuilder(column: $table.elvanseMg, builder: (column) => column);
+
+  GeneratedColumn<String> get elvanseZeit => $composableBuilder(
+    column: $table.elvanseZeit,
+    builder: (column) => column,
+  );
 
   GeneratedColumn<double> get innereUnruhe => $composableBuilder(
     column: $table.innereUnruhe,
@@ -2735,6 +2806,7 @@ class $$EntriesTableTableManager
                 Value<int?> wohlbefinden = const Value.absent(),
                 Value<double?> schlafStunden = const Value.absent(),
                 Value<int?> elvanseMg = const Value.absent(),
+                Value<String?> elvanseZeit = const Value.absent(),
                 Value<double?> innereUnruhe = const Value.absent(),
                 Value<int?> medikinetMg = const Value.absent(),
                 Value<String?> medikinetZeit = const Value.absent(),
@@ -2754,6 +2826,7 @@ class $$EntriesTableTableManager
                 wohlbefinden: wohlbefinden,
                 schlafStunden: schlafStunden,
                 elvanseMg: elvanseMg,
+                elvanseZeit: elvanseZeit,
                 innereUnruhe: innereUnruhe,
                 medikinetMg: medikinetMg,
                 medikinetZeit: medikinetZeit,
@@ -2775,6 +2848,7 @@ class $$EntriesTableTableManager
                 Value<int?> wohlbefinden = const Value.absent(),
                 Value<double?> schlafStunden = const Value.absent(),
                 Value<int?> elvanseMg = const Value.absent(),
+                Value<String?> elvanseZeit = const Value.absent(),
                 Value<double?> innereUnruhe = const Value.absent(),
                 Value<int?> medikinetMg = const Value.absent(),
                 Value<String?> medikinetZeit = const Value.absent(),
@@ -2794,6 +2868,7 @@ class $$EntriesTableTableManager
                 wohlbefinden: wohlbefinden,
                 schlafStunden: schlafStunden,
                 elvanseMg: elvanseMg,
+                elvanseZeit: elvanseZeit,
                 innereUnruhe: innereUnruhe,
                 medikinetMg: medikinetMg,
                 medikinetZeit: medikinetZeit,

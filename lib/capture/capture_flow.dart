@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../l10n.dart';
+import '../onboarding.dart';
 import '../models.dart';
 import '../painters.dart';
 import '../review_screen.dart';
@@ -13,7 +15,8 @@ class CaptureFlowScreen extends StatefulWidget {
   final PhaskaEntry? entry;
   final int startIndex;
 
-  /// true = nach dem letzten Schritt zur Übersicht (z. B. Bearbeiten aus der Tabelle)
+  /// true = nach dem letzten Schritt zur Übersicht (z. B. Bearbeiten aus der
+  /// Tabelle oder „Attacke beendet" – Punkt 7).
   final bool editOpensReview;
 
   const CaptureFlowScreen({
@@ -71,9 +74,11 @@ class _CaptureFlowScreenState extends State<CaptureFlowScreen> {
   }
 
   String get _primaryLabel {
-    if (_isLast) return widget.editMode ? 'Fertig' : 'Abschließen';
-    if (widget.editMode) return 'Weiter';
-    return _steps![_index].hasValue(_entry) ? 'Weiter' : 'Überspringen';
+    if (_isLast) return widget.editMode ? S.t('done') : S.t('finish');
+    if (widget.editMode) return S.t('continue_');
+    return _steps![_index].hasValue(_entry)
+        ? S.t('continue_')
+        : S.t('skip_step');
   }
 
   Future<void> _onPrimary() async {
@@ -95,16 +100,15 @@ class _CaptureFlowScreenState extends State<CaptureFlowScreen> {
         context: context,
         builder: (ctx) => AlertDialog(
           icon: const Icon(Icons.check_circle_outline),
-          title: const Text('Tag fertig erfasst'),
-          content: const Text(
-              'Erfassung beenden oder direkt mit der Migräne-Erfassung (Gruppe 2) weitermachen?'),
+          title: Text(S.t('cap_done_title')),
+          content: Text(S.t('cap_done_body')),
           actions: [
             TextButton(
                 onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('Beenden')),
+                child: Text(S.t('cap_done_end'))),
             FilledButton(
                 onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('Weiter mit Gruppe 2')),
+                child: Text(S.t('cap_done_g2'))),
           ],
         ),
       );
@@ -122,7 +126,6 @@ class _CaptureFlowScreenState extends State<CaptureFlowScreen> {
   }
 
   Future<void> _finish() async {
-    // Punkt 2: unberührte Werte bekommen ihren Voreinstellwert.
     for (final s in _steps!) {
       s.applyDefault?.call(_entry);
     }
@@ -145,18 +148,18 @@ class _CaptureFlowScreenState extends State<CaptureFlowScreen> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Erfassung abbrechen?'),
-        content: const Text('Die bisher eingegebenen Daten gehen verloren.'),
+        title: Text(S.t('cap_abort_title')),
+        content: Text(S.t('cap_abort_body')),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Weiter erfassen')),
+              child: Text(S.t('cap_abort_keep'))),
           FilledButton(
               style: FilledButton.styleFrom(
                   backgroundColor: Theme.of(ctx).colorScheme.error,
                   foregroundColor: Theme.of(ctx).colorScheme.onError),
               onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Abbrechen')),
+              child: Text(S.t('cap_abort_yes'))),
         ],
       ),
     );
@@ -183,14 +186,17 @@ class _CaptureFlowScreenState extends State<CaptureFlowScreen> {
             child: Row(children: [
               IconButton(
                   icon: const Icon(Icons.close),
-                  tooltip: 'Abbrechen',
+                  tooltip: S.t('cancel'),
                   onPressed: _onClose),
               Expanded(
                 child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text('fasy', style: theme.textTheme.labelMedium),
-                      Text(step.group == 1 ? 'Tag' : 'Migräne',
+                      Text(
+                          step.group == 1
+                              ? S.t('cap_group_day')
+                              : S.t('cap_group_mig'),
                           style: theme.textTheme.titleSmall),
                     ]),
               ),
@@ -221,9 +227,11 @@ class _CaptureFlowScreenState extends State<CaptureFlowScreen> {
                     key: ValueKey(s.id),
                     step: s,
                     entry: _entry,
-                    // Der Eltern-Rebuild ist bewusst zurück – so wie in
-                    // der Version, in der die Eingaben perfekt liefen.
-                    onChanged: () => setState(() {}),
+                    onChanged: () {
+                      setState(() {});
+                      // Tutorial: Karte bei erster Eingabe ausblenden.
+                      TutorialController.instance.notifyInput();
+                    },
                   ),
               ],
             ),
@@ -234,7 +242,7 @@ class _CaptureFlowScreenState extends State<CaptureFlowScreen> {
               TextButton.icon(
                 onPressed: _index > 0 ? () => _go(_index - 1) : null,
                 icon: const Icon(Icons.arrow_back),
-                label: const Text('Zurück'),
+                label: Text(S.t('back')),
               ),
               const Spacer(),
               FilledButton(
@@ -261,7 +269,6 @@ class _StepShell extends StatelessWidget {
       required this.entry,
       required this.onChanged});
 
-  /// Große Deko-Pflanze; IgnorePointer, damit sie nie Eingaben abfängt.
   Widget _deco(
     Color color, {
     double? top,
@@ -339,7 +346,6 @@ class _StepShell extends StatelessWidget {
   }
 }
 
-/// Kleiner Erfolgs-Dialog – öffentlich, wird auch von der Einzelerfassung genutzt.
 class SuccessDialog extends StatefulWidget {
   const SuccessDialog({super.key});
 
@@ -385,18 +391,17 @@ class _SuccessDialogState extends State<SuccessDialog> {
             ),
           ),
           const SizedBox(height: 16),
-          Text('Erfolgreich erfasst!',
+          Text(S.t('cap_success'),
               style: theme.textTheme.titleLarge
                   ?.copyWith(fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
-          Text('Gleich geht’s weiter.', style: theme.textTheme.bodyMedium),
+          Text(S.t('cap_success_sub'), style: theme.textTheme.bodyMedium),
         ]),
       ),
     );
   }
 }
 
-/// Zeigt den Erfolgs-Dialog an und schließt ihn automatisch wieder.
 Future<void> showSuccessCheck(BuildContext context) => showDialog(
     context: context,
     barrierDismissible: false,

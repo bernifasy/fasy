@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'capture/steps.dart';
 import 'db.dart';
 import 'models.dart';
+import 'l10n.dart';
 import 'painters.dart';
 import 'platform/files.dart';
 
@@ -79,6 +80,9 @@ class _EditSchemaScreenState extends State<EditSchemaScreen> {
 
   /// Punkt 4.3: gelöschte Standard-Datenpunkte (wiederherstellbar).
   Map<int, Set<String>> _deleted = {1: {}, 2: {}};
+  /// Punkt 10.2: komplette Erfassungs-Gruppen abschaltbar.
+  bool _g1Enabled = true;
+  bool _g2Enabled = true;
 
   /// Punkt 4.2: Undo-Stack.
   final List<_Snap> _undo = [];
@@ -113,6 +117,8 @@ class _EditSchemaScreenState extends State<EditSchemaScreen> {
     };
     _quick = (await PhaskaDb.instance.quickKeys()).toSet();
     _unlocked = await PhaskaDb.instance.unlockedPoints();
+    _g1Enabled = await PhaskaDb.instance.groupEnabled(1);
+    _g2Enabled = await PhaskaDb.instance.groupEnabled(2);
     _deleted = del;
     if (mounted) {
       setState(() {
@@ -667,6 +673,22 @@ class _EditSchemaScreenState extends State<EditSchemaScreen> {
               icon: const Icon(Icons.add, size: 18),
               label: const Text('Neuer Datenpunkt')),
         ]),
+      ),
+
+      // Punkt 10.2: Gruppe komplett an/aus (wie im Onboarding gewählt).
+      SwitchListTile(
+        title: Text(group == 1 ? S.t('ob_col_day') : S.t('ob_col_mig'),
+            style: const TextStyle(fontWeight: FontWeight.bold)),
+        subtitle: const Text(
+            'Start-Buttons und Erfassung komplett ein-/ausblenden'),
+        value: group == 1 ? _g1Enabled : _g2Enabled,
+        onChanged: (v) async {
+          _pushUndo();
+          setState(() {
+            if (group == 1) { _g1Enabled = v; } else { _g2Enabled = v; }
+          });
+          await PhaskaDb.instance.saveGroupEnabled(group, v);
+        },
       ),
       ReorderableListView.builder(
         shrinkWrap: true,

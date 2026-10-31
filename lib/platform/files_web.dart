@@ -27,15 +27,25 @@ class WebFilesGateway extends FilesGateway {
       _download(fileName, bytes, mime);
 
   @override
+  Future<void> shareMany(List<(String, List<int>, String)> files,
+      {required String text}) async {
+    // Web kennt kein Multi-File-Teilen → zwei Downloads nacheinander.
+    for (final (name, bytes, mime) in files) {
+      _download(name, bytes, mime);
+      await Future.delayed(const Duration(milliseconds: 350));
+    }
+  }
+
+  @override
   Future<String?> saveLocally(
       String fileName, List<int> bytes, String mime) async {
     _download(fileName, bytes, mime);
-    return fileName; // landet im Download-Ordner des Browsers
+    return fileName;
   }
 
   @override
   Future<void> autosave(String fileName, List<int> bytes) async {
-    // Kein Dateisystem im Browser – siehe files_stub.dart.
+    // Kein Dateisystem im Browser.
   }
 }
 

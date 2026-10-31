@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../db.dart';
+import '../l10n.dart';
 import '../models.dart';
 
 /// Feste IDs der eingebauten Datenpunkte.
@@ -37,7 +38,7 @@ class CaptureStep {
           BuildContext context, PhaskaEntry entry, void Function() changed)
       build;
 
-  /// NEU (Punkt 2): setzt den Voreinstellwert, wenn nichts angefasst wurde.
+  /// Setzt den Voreinstellwert, wenn nichts angefasst wurde.
   final void Function(PhaskaEntry e)? applyDefault;
 
   const CaptureStep({
@@ -73,7 +74,7 @@ Future<List<CaptureStep>> stepsForGroup(int group) async {
   final defs = await PhaskaDb.instance.fieldDefs(group: group);
   final defsById = {for (final d in defs) d.id: d};
   final hidden = await PhaskaDb.instance.hiddenBuiltins(group);
-  final deleted = await PhaskaDb.instance.deletedBuiltins(group); // Punkt 4.3
+  final deleted = await PhaskaDb.instance.deletedBuiltins(group);
   final labels = await PhaskaDb.instance.builtinLabels(group);
   final themes = await PhaskaDb.instance.builtinThemes(group);
   final custom = {for (final d in defs) d.id: _customStep(d)};
@@ -83,7 +84,6 @@ Future<List<CaptureStep>> stepsForGroup(int group) async {
       custom[id] ??
           _builtinStep(id, label: labels[id], theme: themes[id] ?? 'none')
   ];
-  // Punkt 2: Standardwerte anhängen.
   return [
     for (final s in base)
       CaptureStep(
@@ -99,8 +99,7 @@ Future<List<CaptureStep>> stepsForGroup(int group) async {
   ];
 }
 
-/// Punkt 2: Was gilt, wenn der Nutzer nichts anfasst?
-/// Slider → sichtbarer Voreinstellwert; Blöcke/Medikamente → 0.
+/// Voreinstellwerte für unberührte Schritte.
 void _applyCustomDefaults(PhaskaEntry e, FieldDef def) {
   for (final inp in def.inputs) {
     if (customSubValue(e, def, inp) != null) continue;
@@ -137,7 +136,7 @@ void Function(PhaskaEntry e)? _defaultForStep(String id, FieldDef? def) {
     case 'intensitaet':
       return (e) => e.migraeneIntensitaet ??= 0;
   }
-  return null; // Text/Zeit/Auswahl: kein sinnvoller Standard
+  return null;
 }
 
 Future<List<CaptureStep>> stepsForAll() async =>
@@ -147,51 +146,45 @@ CaptureStep _builtinStep(String id, {String? label, String theme = 'none'}) {
   switch (id) {
     case 'wohlbefinden':
       return CaptureStep(
-        id: id, group: 1, title: label ?? 'Wohlbefinden',
-        subtitle: 'Wie geht es dir gerade? (1–100)', plantTheme: theme,
+        id: id, group: 1, title: label ?? S.builtin(id),
+        subtitle: S.t('sub_wohlbefinden'), plantTheme: theme,
         hasValue: (e) => e.wohlbefinden != null,
         build: (context, e, changed) {
           e.wohlbefinden ??= 50;
           return VerticalSliderInput(
               value: e.wohlbefinden!,
-              hint: '1 = sehr schlecht · 100 = ausgezeichnet',
+              hint: S.t('w_hint_vslider'),
               onChanged: (v) { e.wohlbefinden = v; changed(); });
         },
       );
     case 'schlaf':
       return CaptureStep(
-        id: id, group: 1, title: label ?? 'Schlaf', plantTheme: theme,
-        subtitle: 'Tippen = volle Stunde · Gedrückt halten = halbe Stunde · '
-            'Drüberstreichen = mehrere Blöcke an/abwählen',
+        id: id, group: 1, title: label ?? S.builtin(id), plantTheme: theme,
+        subtitle: S.t('sub_schlaf'),
         hasValue: (e) => e.schlafStunden != null,
         build: (context, e, changed) {
-          e.schlafStunden ??= 0.0; // Punkt 2
+          e.schlafStunden ??= 0.0;
           return HalfBlocksInput(
             initial: e.schlafStunden,
             onChanged: (v) { e.schlafStunden = v; changed(); },
           );
         },
-        
       );
     case 'elvanse':
+      // Punkt 5/10.2.1: Elvanse erfasst jetzt auch die Uhrzeit.
       return CaptureStep(
-        id: id, group: 1, title: label ?? 'Elvanse', plantTheme: theme,
-        subtitle: 'Einnahmemenge in mg',
+        id: id, group: 1, title: label ?? S.builtin(id), plantTheme: theme,
+        subtitle: S.t('sub_elvanse'),
         hasValue: (e) => e.elvanseMg != null,
         build: (context, e, changed) {
-          e.elvanseMg ??= 0; // Punkt 2: „keine" ist vorausgewählt
-          return MgChoiceInput(
-            options: const [20, 30, 40, 50],
-            value: e.elvanseMg,
-            onChanged: (v) { e.elvanseMg = v; changed(); },
-          );
+          e.elvanseMg ??= 0;
+          return ElvanseInput(entry: e, onChanged: changed);
         },
-        
       );
     case 'unruhe':
       return CaptureStep(
-        id: id, group: 1, title: label ?? 'Innere Unruhe', plantTheme: theme,
-        subtitle: '0 = gar nicht · 5 = mittel · 10 = sehr stark',
+        id: id, group: 1, title: label ?? S.builtin(id), plantTheme: theme,
+        subtitle: S.t('sub_unruhe'),
         hasValue: (e) => e.innereUnruhe != null,
         build: (context, e, changed) {
           e.innereUnruhe ??= 5.0;
@@ -202,61 +195,63 @@ CaptureStep _builtinStep(String id, {String? label, String theme = 'none'}) {
       );
     case 'medikinet':
       return CaptureStep(
-        id: id, group: 1, title: label ?? 'Medikinet', plantTheme: theme,
-        subtitle: 'Menge, Zeitpunkt und Magen',
+        id: id, group: 1, title: label ?? S.builtin(id), plantTheme: theme,
+        subtitle: S.t('sub_medikinet'),
         hasValue: (e) => e.medikinetMg != null,
         build: (context, e, changed) {
-          e.medikinetMg ??= 0; // Punkt 2: „keine" ist vorausgewählt
+          e.medikinetMg ??= 0;
           return MedikinetInput(entry: e, onChanged: changed);
         },
       );
     case 'intensitaet':
       return CaptureStep(
-        id: id, group: 2, title: label ?? 'Migräne-Intensität',
+        id: id, group: 2, title: label ?? S.builtin(id),
         plantTheme: theme,
-        subtitle: 'Blöcke von 1 bis 10 antippen oder drüberstreichen',
+        subtitle: S.t('sub_intensitaet'),
         hasValue: (e) => e.migraeneIntensitaet != null,
         build: (context, e, changed) {
-          e.migraeneIntensitaet ??= 0; // Punkt 2
+          e.migraeneIntensitaet ??= 0;
           return IntensityBlocksInput(
             value: e.migraeneIntensitaet,
             onChanged: (v) { e.migraeneIntensitaet = v; changed(); },
           );
         },
-        
       );
     case 'start':
     case 'ende':
       return CaptureStep(
         id: id, group: 2, plantTheme: theme,
-        title: label ??
-            (id == 'start' ? 'Beginn der Migräne' : 'Ende der Migräne'),
+        title: label ?? S.builtin(id),
         hasValue: (e) =>
             id == 'start' ? e.migraeneStart != null : e.migraeneEnde != null,
-        build: (context, e, changed) => TimeStepInput(
-          value: id == 'start' ? e.migraeneStart : e.migraeneEnde,
-          onChanged: (v) {
-            if (id == 'start') { e.migraeneStart = v; } else { e.migraeneEnde = v; }
-            changed();
-          },
-        ),
+        build: (context, e, changed) {
+          // Neu: Beginn wird mit der aktuellen Zeit vorbefüllt (von der
+          // Nutzerin änderbar). Das ENDE bleibt absichtlich leer – das
+          // kommt nur vom „Attacke beendet"-Knopf oder per Hand.
+          if (id == 'start') e.migraeneStart ??= formatClock(TimeOfDay.now());
+          return TimeStepInput(
+            value: id == 'start' ? e.migraeneStart : e.migraeneEnde,
+            onChanged: (v) {
+              if (id == 'start') { e.migraeneStart = v; } else { e.migraeneEnde = v; }
+              changed();
+            },
+          );
+        },
       );
     case 'ausloeser':
     case 'symptome':
       final isA = id == 'ausloeser';
       return CaptureStep(
         id: id, group: 2, plantTheme: theme,
-        title: label ?? (isA ? 'Auslöser' : 'Begleitsymptome'),
-        subtitle: 'Freitext – bisherige Einträge erscheinen als Vorschlag',
+        title: label ?? S.builtin(id),
+        subtitle: isA ? S.t('sub_ausloeser') : S.t('sub_symptome'),
         hasValue: (e) {
           final v = isA ? e.ausloeser : e.begleitsymptome;
           return v != null && v.isNotEmpty;
         },
         build: (context, e, changed) => TagsInput(
           initial: isA ? e.ausloeser : e.begleitsymptome,
-          hint: isA
-              ? 'z. B. Stress, Wetter, Bildschirm …'
-              : 'z. B. Übelkeit, Lichtempfindlichkeit …',
+          hint: isA ? S.t('w_hint_ausloeser') : S.t('w_hint_symptome'),
           suggestions: PhaskaDb.instance
               .pastValues(isA ? 'ausloeser' : 'begleitsymptome'),
           onChanged: (v) {
@@ -267,7 +262,7 @@ CaptureStep _builtinStep(String id, {String? label, String theme = 'none'}) {
       );
     case 'notizen':
       return CaptureStep(
-        id: id, group: 2, title: label ?? 'Notizen', plantTheme: theme,
+        id: id, group: 2, title: label ?? S.builtin(id), plantTheme: theme,
         hasValue: (e) => e.notizen != null && e.notizen!.isNotEmpty,
         build: (context, e, changed) => NotesInput(
           initial: e.notizen,
@@ -289,7 +284,7 @@ CaptureStep _customStep(FieldDef d) => CaptureStep(
         return v != null && (v is! String || v.isNotEmpty);
       }),
       build: (context, e, changed) {
-        _applyCustomDefaults(e, d); // Punkt 2
+        _applyCustomDefaults(e, d);
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -309,7 +304,6 @@ CaptureStep _customStep(FieldDef d) => CaptureStep(
           ],
         );
       },
-      
     );
 
 Widget _customInput(
@@ -342,8 +336,7 @@ Widget _customInput(
   }
 }
 
-/// Öffentliche Hülle um [_customInput] – damit auch Einzelerfassung
-/// und Einzeltabelle dieselben Eingabe-Widgets nutzen können.
+/// Öffentliche Hülle um [_customInput].
 Widget customInputWidget(
         FieldInput inp, Object? value, ValueChanged<Object?> onChanged) =>
     _customInput(inp, value, onChanged);
@@ -361,7 +354,6 @@ TimeOfDay? parseClock(String? v) {
       hour: int.tryParse(p[0]) ?? 0, minute: int.tryParse(p[1]) ?? 0);
 }
 
-/// Stunden/Minuten-Trommeln wie in der Android-Wecker-App.
 Future<String?> pickWheelTime(BuildContext context, String? current) async {
   final init = parseClock(current) ?? TimeOfDay.now();
   var hour = init.hour;
@@ -412,7 +404,7 @@ Future<String?> pickWheelTime(BuildContext context, String? current) async {
               Expanded(
                   child: OutlinedButton(
                       onPressed: () => Navigator.pop(ctx),
-                      child: const Text('Abbrechen'))),
+                      child: Text(S.t('cancel')))),
               const SizedBox(width: 12),
               Expanded(
                 flex: 2,
@@ -421,7 +413,7 @@ Future<String?> pickWheelTime(BuildContext context, String? current) async {
                       ctx,
                       '${hour.toString().padLeft(2, '0')}:'
                       '${minute.toString().padLeft(2, '0')}'),
-                  child: const Text('Übernehmen'),
+                  child: Text(S.t('confirm')),
                 ),
               ),
             ]),
@@ -434,8 +426,6 @@ Future<String?> pickWheelTime(BuildContext context, String? current) async {
 
 // ---------------- Eingabe-Widgets ----------------
 
-/// Die Slider/Blöcke halten ihren Wert selbst und reagieren dadurch
-/// sofort auf den Finger – ohne auf einen Eltern-Rebuild zu warten.
 class VerticalSliderInput extends StatefulWidget {
   final int value;
   final int min;
@@ -516,7 +506,6 @@ class _VerticalSliderInputState extends State<VerticalSliderInput> {
   }
 }
 
-/// 0–10: 5 liegt genau in der Mitte.
 class HorizontalSliderInput extends StatefulWidget {
   final double value;
   final double min;
@@ -576,7 +565,6 @@ class _HorizontalSliderInputState extends State<HorizontalSliderInput> {
   }
 }
 
-/// Blöcke mit Halbierung + Streich-Geste (an/abwählen).
 class HalfBlocksInput extends StatefulWidget {
   final double? initial;
   final int maxBlocks;
@@ -714,7 +702,7 @@ class _HalfBlocksInputState extends State<HalfBlocksInput> {
         ),
       ),
       const SizedBox(height: 16),
-      Text('Tippen: 1 h an/aus · Halten: ½ h an/aus\nStreichen: mehrere an/ab',
+      Text(S.t('w_blocks_hint'),
           textAlign: TextAlign.center,
           style: theme.textTheme.bodySmall
               ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
@@ -722,7 +710,6 @@ class _HalfBlocksInputState extends State<HalfBlocksInput> {
   }
 }
 
-/// 1..N Blöcke in einer Reihe – tippen oder drüberstreichen.
 class IntensityBlocksInput extends StatefulWidget {
   final int? value;
   final int max;
@@ -811,8 +798,9 @@ class _IntensityBlocksInputState extends State<IntensityBlocksInput> {
       ),
       const SizedBox(height: 8),
       Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-        Text('1 = leicht', style: theme.textTheme.bodySmall),
-        Text('${widget.max} = unerträglich', style: theme.textTheme.bodySmall),
+        Text(S.t('w_intensity_low'), style: theme.textTheme.bodySmall),
+        Text(S.t('w_intensity_high').replaceAll('{max}', '${widget.max}'),
+            style: theme.textTheme.bodySmall),
       ]),
     ]);
   }
@@ -820,7 +808,7 @@ class _IntensityBlocksInputState extends State<IntensityBlocksInput> {
 
 class MgChoiceInput extends StatelessWidget {
   final List<int> options;
-  final int? value; // 0 = „keine“
+  final int? value; // 0 = „keine"
   final ValueChanged<int?> onChanged;
   final WrapAlignment alignment;
   const MgChoiceInput(
@@ -842,7 +830,7 @@ class MgChoiceInput extends StatelessWidget {
                 selected: value == mg,
                 onSelected: (sel) => onChanged(sel ? mg : null)),
           ChoiceChip(
-              label: const Text('keine'),
+              label: Text(S.t('w_none')),
               selected: value == 0,
               onSelected: (sel) => onChanged(sel ? 0 : null)),
         ],
@@ -874,11 +862,72 @@ class ChoiceChipsInput extends StatelessWidget {
       );
 }
 
+/// Punkt 5/10.2.1: Elvanse – Menge (bis 70 mg) + Uhrzeit, wie bei Medikinet.
+class ElvanseInput extends StatelessWidget {
+  final PhaskaEntry entry;
+  final VoidCallback onChanged;
+  const ElvanseInput({super.key, required this.entry, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final e = entry;
+    final taken = e.elvanseMg != null && e.elvanseMg != 0;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(S.t('w_menge'), style: theme.textTheme.titleSmall),
+      const SizedBox(height: 8),
+      MgChoiceInput(
+        alignment: WrapAlignment.start,
+        options: kElvanseOptions, // 20–70 mg
+        value: e.elvanseMg,
+        onChanged: (v) {
+          e.elvanseMg = v;
+          if (v == null || v == 0) e.elvanseZeit = null;
+          onChanged();
+        },
+      ),
+      if (taken) ...[
+        const SizedBox(height: 28),
+        Text(S.t('w_zeitpunkt'), style: theme.textTheme.titleSmall),
+        const SizedBox(height: 8),
+        InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () async {
+            final t = await pickWheelTime(context, e.elvanseZeit);
+            if (t != null) { e.elvanseZeit = t; onChanged(); }
+          },
+          child: Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            decoration: BoxDecoration(
+              border: Border.all(color: theme.colorScheme.outlineVariant),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(children: [
+              const Icon(Icons.schedule),
+              const SizedBox(width: 12),
+              Text(e.elvanseZeit ?? S.t('w_zeit_waehlen'),
+                  style: theme.textTheme.titleMedium),
+              const Spacer(),
+              if (e.elvanseZeit != null)
+                GestureDetector(
+                  onTap: () { e.elvanseZeit = null; onChanged(); },
+                  child: const Icon(Icons.close, size: 20),
+                ),
+            ]),
+          ),
+        ),
+      ],
+    ]);
+  }
+}
+
 class MedikinetInput extends StatelessWidget {
   final PhaskaEntry entry;
   final VoidCallback onChanged;
   const MedikinetInput({super.key, required this.entry, required this.onChanged});
 
+  // Gespeicherte Werte bleiben bewusst deutsch (Daten-/CSV-Kontinuität).
   static const abstaende = [
     'direkt danach', '< 30 Min.', '30–60 Min.', '> 1 Std.'
   ];
@@ -889,11 +938,11 @@ class MedikinetInput extends StatelessWidget {
     final e = entry;
     final taken = e.medikinetMg != null && e.medikinetMg != 0;
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text('Menge', style: theme.textTheme.titleSmall),
+      Text(S.t('w_menge'), style: theme.textTheme.titleSmall),
       const SizedBox(height: 8),
       MgChoiceInput(
         alignment: WrapAlignment.start,
-        options: const [5, 10, 15, 20],
+        options: kMedikinetOptions, // 5–80 mg (Punkt 10.2.1)
         value: e.medikinetMg,
         onChanged: (v) {
           e.medikinetMg = v;
@@ -907,7 +956,7 @@ class MedikinetInput extends StatelessWidget {
       ),
       if (taken) ...[
         const SizedBox(height: 28),
-        Text('Zeitpunkt', style: theme.textTheme.titleSmall),
+        Text(S.t('w_zeitpunkt'), style: theme.textTheme.titleSmall),
         const SizedBox(height: 8),
         InkWell(
           borderRadius: BorderRadius.circular(12),
@@ -925,7 +974,7 @@ class MedikinetInput extends StatelessWidget {
             child: Row(children: [
               const Icon(Icons.schedule),
               const SizedBox(width: 12),
-              Text(e.medikinetZeit ?? 'Zeit wählen',
+              Text(e.medikinetZeit ?? S.t('w_zeit_waehlen'),
                   style: theme.textTheme.titleMedium),
               const Spacer(),
               if (e.medikinetZeit != null)
@@ -937,7 +986,7 @@ class MedikinetInput extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 28),
-        Text('Magen', style: theme.textTheme.titleSmall),
+        Text(S.t('w_magen'), style: theme.textTheme.titleSmall),
         const SizedBox(height: 8),
         SegmentedButton<String>(
           segments: const [
@@ -959,7 +1008,7 @@ class MedikinetInput extends StatelessWidget {
         ),
         if (e.medikinetMagen == 'nach dem Essen') ...[
           const SizedBox(height: 16),
-          Text('Wie lange nach dem Essen?', style: theme.textTheme.titleSmall),
+          Text(S.t('w_abstand_essen'), style: theme.textTheme.titleSmall),
           const SizedBox(height: 8),
           Wrap(spacing: 8, runSpacing: 8, children: [
             for (final a in abstaende)
@@ -993,7 +1042,7 @@ class TimeStepInput extends StatelessWidget {
               color: value == null
                   ? theme.colorScheme.outline
                   : theme.colorScheme.primary)),
-      if (value != null) Text('Uhr', style: theme.textTheme.bodyMedium),
+      if (value != null) Text(S.t('w_uhr'), style: theme.textTheme.bodyMedium),
       const SizedBox(height: 28),
       FilledButton.tonalIcon(
         onPressed: () async {
@@ -1001,19 +1050,19 @@ class TimeStepInput extends StatelessWidget {
           if (t != null) onChanged(t);
         },
         icon: const Icon(Icons.schedule),
-        label: Text(value == null ? 'Zeit wählen' : 'Zeit ändern'),
+        label: Text(value == null ? S.t('time_pick') : S.t('time_change')),
       ),
       const SizedBox(height: 12),
       Wrap(alignment: WrapAlignment.center, spacing: 8, children: [
         ActionChip(
           avatar: const Icon(Icons.update, size: 18),
-          label: const Text('Jetzt'),
+          label: Text(S.t('time_now')),
           onPressed: () => onChanged(formatClock(TimeOfDay.now())),
         ),
         if (value != null)
           ActionChip(
             avatar: const Icon(Icons.clear, size: 18),
-            label: const Text('Zurücksetzen'),
+            label: Text(S.t('time_reset')),
             onPressed: () => onChanged(null),
           ),
       ]),
@@ -1100,14 +1149,14 @@ class _TagsInputState extends State<TagsInput> {
         ]),
       ],
       const SizedBox(height: 24),
-      Text('Bisher verwendet', style: theme.textTheme.titleSmall),
+      Text(S.t('w_tags_used'), style: theme.textTheme.titleSmall),
       const SizedBox(height: 8),
       FutureBuilder<List<String>>(
         future: widget.suggestions,
         builder: (context, snap) {
           final s = snap.data ?? const <String>[];
           if (s.isEmpty) {
-            return Text('Noch keine Einträge vorhanden',
+            return Text(S.t('w_tags_empty'),
                 style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant));
           }
@@ -1149,7 +1198,7 @@ class _NotesInputState extends State<NotesInput> {
         minLines: 4,
         maxLines: 8,
         decoration: InputDecoration(
-          hintText: 'Weitere Anmerkungen …',
+          hintText: S.t('w_notes_hint'),
           border:
               OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
         ),

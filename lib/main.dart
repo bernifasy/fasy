@@ -3,16 +3,20 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'capture/capture_flow.dart';
+import 'capture/steps.dart';
 import 'db.dart';
-import 'edit_schema_screen.dart';
 import 'graphs.dart';
+import 'l10n.dart';
 import 'models.dart';
-import 'onboarding.dart'; // NEU (Punkt 7)
+import 'notifications.dart';
+import 'onboarding.dart';
 import 'painters.dart';
 import 'quick_capture.dart';
 import 'quick_table.dart';
+import 'settings_screen.dart';
 import 'table_screen.dart';
 import 'widget_bridge.dart';
+import 'widgets.dart';
 
 final navKey = GlobalKey<NavigatorState>();
 
@@ -21,10 +25,13 @@ Future<void> main() async {
   final (c1, c2) = await PhaskaDb.instance.loadColors();
   AppColors.group1.value = Color(c1);
   AppColors.group2.value = Color(c2);
-  AppColors.quick.value =
-      Color(await PhaskaDb.instance.loadQuickColor()); // NEU (Punkt 1)
+  AppColors.quick.value = Color(await PhaskaDb.instance.loadQuickColor());
+  AppColors.attackEnd.value =
+      Color(await PhaskaDb.instance.loadAttackEndColor()); // Punkt 7
   AppColors.themeMode.value = await PhaskaDb.instance.loadThemeMode();
+  S.code.value = await PhaskaDb.instance.loadLanguage(); // Punkt 8.4
   AppDeco.items.value = await PhaskaDb.instance.loadHomeDecos();
+  await PhaskaDb.instance.clearDemoData(); // Tutorial-Reste (Sicherheitsnetz)
   runApp(const FasyApp());
 }
 
@@ -43,8 +50,10 @@ class FasyApp extends StatelessWidget {
       listenable: Listenable.merge([
         AppColors.group1,
         AppColors.group2,
-        AppColors.quick, // NEU (Punkt 1)
+        AppColors.quick,
+        AppColors.attackEnd,
         AppColors.themeMode,
+        S.code, // Sprachwechsel → kompletter Neuaufbau (Punkt 8.4)
       ]),
       builder: (context, _) => MaterialApp(
         title: 'fasy',
@@ -71,29 +80,86 @@ class HomePager extends StatefulWidget {
 }
 
 class _HomePagerState extends State<HomePager> with WidgetsBindingObserver {
-  final _controller = PageController();
+  PageController? _controller;
   int _page = 0;
-  Timer? _midnight; // NEU (Punkt 3)
+  int _cols = 1;
+  List<String> _ids = const ['home', 'graphs', 'quick', 'table'];
+  Timer? _midnight;
+
+  int get _homeIndex {
+    final i = _ids.indexOf('home');
+    return i < 0 ? 0 : i;
+  }
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this); // NEU (Punkt 3)
-    Repo.changes.addListener(_pushWidgets);
+    WidgetsBinding.instance.addObserver(this);
+    Repo.changes.addListener(_onRepoChange);
     updateHomeWidgets();
     initWidgetLinks(_onWidgetUri);
-    _scheduleMidnightRefresh(); // NEU (Punkt 3)
+    _scheduleMidnightRefresh();
+    _loadSlides();
+    Notifications.onTap = _onNotificationTap; // Punkt 8.5
     WidgetsBinding.instance
-        .addPostFrameCallback((_) => _maybeWelcome()); // NEU (Punkt 7)
+        .addPostFrameCallback((_) => _maybeWelcome()); // Punkt 6/10
   }
 
-  void _pushWidgets() => updateHomeWidgets();
+  void _onRepoChange() {
+    updateHomeWidgets();
+    unawaited(Notifications.rescheduleAll());
+    _loadSlides();
+  }
 
-  // ---------- NEU: Mitternachts-Refresh der Widgets (Punkt 3) ----------
+  Future<void> _loadSlides() async {
+    final cfgs = await PhaskaDb.instance.loadSlides();
+    if (!mounted) return;
+    setState(() {
+      // Punkt 8.3: nur SICHTBARE Slides anzeigen (Fehler 5: sofort wirksam,
+      // weil saveSlides() Repo.bump() → _onRepoChange() → _loadSlides()).
+      _ids = [for (final c in cfgs) if (c.visible) c.id];
+      if (_ids.isEmpty) _ids = const ['home']; // home ist nie versteckt
+      if (_page >= _ids.length) _page = _ids.length - 1;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final c = homePagerController;
+      if (c != null && c.hasClients && c.page?.round() != _page) {
+        c.jumpToPage(_page);
+      }
+    });
+  }
 
-  /// Timer auf 00:01 Uhr des nächsten Tages; danach neu geplant.
-  /// Repo.bump() frischt dabei sowohl die App (Kalender!) als auch –
-  /// über den Listener oben – die Homescreen-Widgets auf.
+  /// Fehler 2: [force] = der Schulungs-Knopf startet IMMER beim
+  /// Willkommensdialog (sonst nur beim allerersten App-Start).
+  Future<void> _maybeWelcome({bool force = false}) async {
+    if (!force && await PhaskaDb.instance.isOnboarded()) return;
+    if (!mounted) return;
+    final intro = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => const WelcomeDialog());
+    await PhaskaDb.instance.markOnboarded();
+    if (!mounted) return;
+    if (intro == true) {
+      await _startOnboarding();
+    } else {
+      // Punkt 10.1: Pfeil-Highlight – Context des Pagers (Overlay ist Ahn!).
+      unawaited(showOnboardingPointer(context));
+    }
+  }
+
+  // ---------- Punkt 8.5: Tap auf Benachrichtigung → Erfassung ----------
+
+  void _onNotificationTap(String payload) {
+    if (!payload.startsWith('capture:')) return;
+    final g = payload.endsWith('g2') ? 2 : 1;
+    navKey.currentState?.push(MaterialPageRoute(
+        builder: (_) => CaptureFlowScreen(startGroup: g)));
+  }
+
+  // ---------- Mitternachts-Refresh ----------
+
   void _scheduleMidnightRefresh() {
     _midnight?.cancel();
     final now = DateTime.now();
@@ -107,28 +173,29 @@ class _HomePagerState extends State<HomePager> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      // Datum könnte im Hintergrund gewechselt haben.
       Repo.bump();
       _scheduleMidnightRefresh();
     }
   }
 
-  // ---------- NEU: Willkommensdialog beim ersten Start (Punkt 7) ----------
+  // ---------- Onboarding (Punkt 6 & 10) ----------
 
-  Future<void> _maybeWelcome() async {
-    if (await PhaskaDb.instance.isOnboarded()) return;
-    final ctx = navKey.currentContext;
-    if (ctx == null || !mounted || !ctx.mounted) return;
-    // ignore: use_build_context_synchronously
-    final intro = await showDialog<bool>(
-        context: ctx,
-        barrierDismissible: false,
-        builder: (_) => const WelcomeDialog());
-    await PhaskaDb.instance.markOnboarded();
-    if (intro == true) {
-      await navKey.currentState
-          ?.push(MaterialPageRoute(builder: (_) => const IntroScreen()));
-    }
+  Future<void> _startOnboarding() async {
+    final result = await navKey.currentState?.push<Object?>(
+        MaterialPageRoute(builder: (_) => const OnboardingScreen()));
+    if (result != true || !mounted) return;
+    final g1 = await PhaskaDb.instance.groupEnabled(1);
+    final g2 = await PhaskaDb.instance.groupEnabled(2);
+    if (!mounted) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      // FIX: State-Context statt Navigator-Context (vorher: Overlay.of crashte).
+      TutorialController.instance.start(context, _ids, g1: g1, g2: g2,
+          onDone: () {
+        navKey.currentState?.push(
+            MaterialPageRoute(builder: (_) => const FinishScreen()));
+      });
+    });
   }
 
   Future<void> _onWidgetUri(Uri? uri) async {
@@ -150,45 +217,60 @@ class _HomePagerState extends State<HomePager> with WidgetsBindingObserver {
   void dispose() {
     _midnight?.cancel();
     WidgetsBinding.instance.removeObserver(this);
-    Repo.changes.removeListener(_pushWidgets);
-    _controller.dispose();
+    Repo.changes.removeListener(_onRepoChange);
+    _controller?.dispose();
     super.dispose();
   }
 
+  // ---------- Punkt 12: mehrere Slides nebeneinander ----------
+
+  void _ensureController(int cols) {
+    if (_cols == cols && _controller != null) return;
+    final old = _controller;
+    _controller = PageController(
+      viewportFraction: 1 / cols,
+      initialPage: _page.clamp(0, _ids.length - 1),
+    );
+    homePagerController = _controller;
+    _cols = cols;
+    old?.dispose();
+  }
+
+  Widget _screenFor(String id) => switch (id) {
+        'graphs' => const GraphsScreen(),
+        'quick' => const QuickTableScreen(),
+        'table' => const TableScreen(),
+        _ => const HomeScreen(),
+      };
+
   @override
   Widget build(BuildContext context) {
-    return PopScope(
-      canPop: _page == 0,
-      onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) {
-          _controller.animateToPage(0,
-              duration: const Duration(milliseconds: 300),
-              curve: Curves.easeOutCubic);
-        }
-      },
-      child: PageView(
-        controller: _controller,
-        onPageChanged: (i) => setState(() => _page = i),
-        children: const [
-          HomeScreen(),
-          GraphsScreen(),
-          QuickTableScreen(),
-          TableScreen(),
-        ],
-      ),
-    );
+    return LayoutBuilder(builder: (context, bc) {
+      // Portrait → 1 Slide; breite Bildschirme → mehrere nebeneinander.
+      final cols = R.columnsFor(bc.maxWidth);
+      _ensureController(cols);
+      return PopScope(
+        canPop: _page == _homeIndex,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop) {
+            _controller!.animateToPage(_homeIndex,
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeOutCubic);
+          }
+        },
+        child: PageView.builder(
+          controller: _controller,
+          itemCount: _ids.length,
+          onPageChanged: (i) => setState(() => _page = i),
+          itemBuilder: (context, i) => _screenFor(_ids[i]),
+        ),
+      );
+    });
   }
 }
 
 // ---------------- Homescreen ----------------
 
-const presetColors = <int>{
-  0xFF3A8330, 0xFF43A047, 0xFF00897B, 0xFF1E88E5, 0xFF4FC3F7,
-  0xFF5C6BC0, 0xFF7E57C2, 0xFF9575CD, 0xFFAB47BC, 0xFFEC407A,
-  0xFFEF5350, 0xFFFB8C00,
-};
-
-/// Auswahl der freigegebenen Einzelerfassungs-Werte (Punkt 2).
 Future<void> _openQuickPicker(BuildContext context) async {
   final defs = await PhaskaDb.instance.fieldDefs();
   final defsById = {for (final d in defs) d.id: d};
@@ -197,17 +279,14 @@ Future<void> _openQuickPicker(BuildContext context) async {
       (await PhaskaDb.instance.quickKeys()).where(available.contains).toList();
   if (!context.mounted) return;
   if (keys.isEmpty) {
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text(
-            'Noch keine Werte für die Einzelerfassung freigegeben – im Menü '
-            '„Anpassen" (Stift-Symbol) pro Datenpunkt „Einzelerfassung '
-            'erlauben" aktivieren.')));
+    ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(S.t('quick_none_hint'))));
     return;
   }
   final agg = await PhaskaDb.instance.quickDayAgg();
   final today = dayKeyOf(DateTime.now());
   if (!context.mounted) return;
-  final quickColor = AppColors.quick.value; // NEU (Punkt 1)
+  final quickColor = AppColors.quick.value;
   final key = await showModalBottomSheet<String>(
     context: context,
     showDragHandle: true,
@@ -216,13 +295,13 @@ Future<void> _openQuickPicker(BuildContext context) async {
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           Padding(
             padding: const EdgeInsets.only(bottom: 8),
-            child: Text('Welchen Wert erfassen?',
+            child: Text(S.t('quick_picker_title'),
                 style: Theme.of(ctx).textTheme.titleMedium),
           ),
           for (final k in keys)
             ListTile(
               leading: CircleAvatar(
-                  backgroundColor: quickColor, // NEU (Punkt 1)
+                  backgroundColor: quickColor,
                   child: const Icon(Icons.speed_rounded,
                       color: Colors.white, size: 20)),
               title: Text(keyLabel(k, defsById)),
@@ -243,14 +322,72 @@ Future<void> _openQuickPicker(BuildContext context) async {
   }
 }
 
-class HomeScreen extends StatelessWidget {
+class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
-  void _start(BuildContext context, int group) {
-    Navigator.push(
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  bool _g1On = true;
+  bool _g2On = true;
+  PhaskaEntry? _runningMigraine; // Punkt 7
+
+  @override
+  void initState() {
+    super.initState();
+    Repo.changes.addListener(_load);
+    _load();
+  }
+
+  @override
+  void dispose() {
+    Repo.changes.removeListener(_load);
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    final g1 = await PhaskaDb.instance.groupEnabled(1);
+    final g2 = await PhaskaDb.instance.groupEnabled(2);
+    final running = g2 ? await PhaskaDb.instance.runningMigraine() : null;
+    if (mounted) {
+      setState(() {
+        _g1On = g1;
+        _g2On = g2;
+        _runningMigraine = running;
+      });
+    }
+  }
+
+  Future<void> _start(int group) async {
+    TutorialController.instance.notifyRoute('capture_open');
+    await Navigator.push(
         context,
         MaterialPageRoute(
             builder: (_) => CaptureFlowScreen(startGroup: group)));
+    TutorialController.instance.notifyRoute('capture_done');
+  }
+
+  /// Punkt 7: offene Attacke beenden → Flow ab „Ende der Migräne", Rest
+  /// durchlaufbar, danach Übersicht.
+  Future<void> _endAttack(PhaskaEntry e) async {
+    final steps = await stepsForAll();
+    final idx = steps.indexWhere((s) => s.id == 'ende');
+    if (!mounted) return;
+    // Fehler 7: „jetzt" vorbelegen – NUR hier. Im normalen Migräne-Flow
+    // bleibt das Ende leer (Vorbelegung in steps.dart wurde entfernt).
+    e.migraeneEnde ??= formatClock(TimeOfDay.now());
+    TutorialController.instance.notifyRoute('capture_open');
+    await Navigator.push(
+        context,
+        MaterialPageRoute(
+            builder: (_) => CaptureFlowScreen(
+                editMode: true,
+                entry: e,
+                startIndex: idx < 0 ? 0 : idx,
+                editOpensReview: true)));
+    TutorialController.instance.notifyRoute('capture_done');
   }
 
   Future<void> _cycleThemeMode() async {
@@ -263,94 +400,153 @@ class HomeScreen extends StatelessWidget {
     await PhaskaDb.instance.saveThemeMode(next);
   }
 
+  Future<void> _openSettings() async {
+    TutorialController.instance.notifyRoute('settings_open');
+    await Navigator.push(context,
+        MaterialPageRoute(builder: (_) => const SettingsScreen()));
+    TutorialController.instance.notifyRoute('settings_done');
+  }
+
+  Future<void> _openOnboarding() async {
+    // Fehler 2: Tutorial-Knopf → komplette Einführung AB Willkommensdialog.
+    final pager = context.findAncestorStateOfType<_HomePagerState>();
+    await pager?._maybeWelcome(force: true);
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final running = _runningMigraine;
+
+    final header = Row(children: [
+      GestureDetector(
+        onTap: () => Navigator.push(context,
+            MaterialPageRoute(builder: (_) => const AboutScreen())),
+        child: const _Wordmark(),
+      ),
+      const Spacer(),
+      IconButton(
+          key: kKeyOnboardingBtn, // Punkt 6 (und Pfeil-Highlight 10.1)
+          tooltip: S.t('tooltip_onboarding'),
+          icon: const Icon(Icons.school_outlined),
+          onPressed: _openOnboarding),
+      IconButton(
+          tooltip: S.t('tooltip_theme'),
+          icon: ValueListenableBuilder(
+            valueListenable: AppColors.themeMode,
+            builder: (_, mode, _) => Icon(switch (mode) {
+              'light' => Icons.light_mode_outlined,
+              'dark' => Icons.dark_mode_outlined,
+              _ => Icons.brightness_auto_outlined,
+            }),
+          ),
+          onPressed: _cycleThemeMode),
+      IconButton(
+          key: kKeySettingsBtn, // Punkt 8: der eine Einstellungs-Knopf
+          tooltip: S.t('tooltip_settings'),
+          icon: const Icon(Icons.settings_rounded),
+          onPressed: _openSettings),
+    ]);
+
+    final buttons = Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (!_g1On && !_g2On)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 16),
+              child: Text(S.t('home_no_groups'),
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant)),
+            ),
+          if (_g1On) ...[
+            _HomeButton(
+              key: kKeyTagBtn,
+              color: groupColor(1),
+              icon: Icons.wb_sunny_rounded,
+              title: S.t('home_tag'),
+              subtitle: S.t('home_tag_sub'),
+              onTap: () => _start(1),
+            ),
+            const SizedBox(height: 16),
+          ],
+          if (_g2On) ...[
+            if (running != null)
+              _HomeButton(
+                // Punkt 7: „Attacke beendet" in eigener Farbe
+                color: AppColors.attackEnd.value,
+                icon: Icons.flag_rounded,
+                title: S.t('home_attack_end'),
+                subtitle: S.t('home_attack_end_sub'),
+                onTap: () => _endAttack(running),
+              )
+            else
+              _HomeButton(
+                key: kKeyMigBtn,
+                color: groupColor(2),
+                icon: Icons.bolt_rounded,
+                title: S.t('home_mig'),
+                subtitle: S.t('home_mig_sub'),
+                onTap: () => _start(2),
+              ),
+            const SizedBox(height: 16),
+          ],
+          _HomeButton(
+            key: kKeyQuickBtn,
+            color: AppColors.quick.value,
+            icon: Icons.speed_rounded,
+            title: S.t('home_quick'),
+            subtitle: S.t('home_quick_sub'),
+            onTap: () => _openQuickPicker(context),
+          ),
+        ]);
+
+    final hint = Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+      Icon(Icons.swipe_left_alt,
+          size: 18, color: theme.colorScheme.onSurfaceVariant),
+      const SizedBox(width: 6),
+      Text(S.t('home_swipe_hint'),
+          style: theme.textTheme.bodySmall
+              ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+    ]);
+
     return Scaffold(
       body: SafeArea(
-      child: Stack(children: [
-        // Konfigurierbare Deko-Pflanzen
-        const _DecoLayer(),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(24, 16, 24, 16),
-          child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(children: [
-                  GestureDetector(
-                    onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (_) => const AboutScreen())),
-                    child: const _Wordmark(),
-                  ),
-                  const Spacer(),
-                  IconButton(
-                      tooltip: 'Darstellung (System/Hell/Dunkel)',
-                      icon: ValueListenableBuilder(
-                        valueListenable: AppColors.themeMode,
-                        builder: (_, mode, _) => Icon(switch (mode) {
-                          'light' => Icons.light_mode_outlined,
-                          'dark' => Icons.dark_mode_outlined,
-                          _ => Icons.brightness_auto_outlined,
-                        }),
-                      ),
-                      onPressed: _cycleThemeMode),
-                  IconButton(
-                      tooltip: 'Farbschema & Deko',
-                      icon: const Icon(Icons.palette_outlined),
-                      onPressed: () => _openColorSheet(context)),
-                  IconButton(
-                      tooltip: 'Datenpunkte anpassen',
-                      icon: const Icon(Icons.tune_rounded),
-                      onPressed: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                              builder: (_) => const EditSchemaScreen()))),
-                ]),
-                const SizedBox(height: 12),
-                const MiniCalendar(),
-                const Spacer(),
-                _HomeButton(
-                  color: groupColor(1),
-                  icon: Icons.wb_sunny_rounded,
-                  title: 'Tag erfassen',
-                  subtitle: 'Wohlbefinden, Schlaf, Medikation',
-                  onTap: () => _start(context, 1),
+        child: Stack(children: [
+          const _DecoLayer(),
+          // Punkt 12: Inhalt scrollt, wenn der Platz knapp wird – sonst
+          // verteilt spaceBetween wie bisher.
+          LayoutBuilder(builder: (context, bc) {
+            return SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(24, 16, 24, 16),
+              child: ConstrainedBox(
+                constraints:
+                    BoxConstraints(minHeight: bc.maxHeight - 32),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Column(children: [
+                      header,
+                      const SizedBox(height: 12),
+                      const MiniCalendar(),
+                    ]),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      child: buttons,
+                    ),
+                    hint,
+                  ],
                 ),
-                const SizedBox(height: 16),
-                _HomeButton(
-                  color: groupColor(2),
-                  icon: Icons.bolt_rounded,
-                  title: 'Migräne erfassen',
-                  subtitle: 'Intensität, Zeiten, Auslöser',
-                  onTap: () => _start(context, 2),
-                ),
-                const SizedBox(height: 16),
-                _HomeButton(
-                  color: AppColors.quick.value, // NEU (Punkt 1)
-                  icon: Icons.speed_rounded,
-                  title: 'Einzelwert erfassen',
-                  subtitle: 'Schnellmessung ohne Tageserfassung',
-                  onTap: () => _openQuickPicker(context),
-                ),
-                const Spacer(),
-                Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                  Icon(Icons.swipe_left_alt,
-                      size: 18, color: theme.colorScheme.onSurfaceVariant),
-                  const SizedBox(width: 6),
-                  Text('Nach links wischen: Verlauf, Einzelwerte & Tabelle',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant)),
-                ]),
-              ]),
-        ),
-      ]),
-    ));
+              ),
+            );
+          }),
+        ]),
+      ),
+    );
   }
 }
 
-/// Kleine Wortmarke oben links.
 class _Wordmark extends StatelessWidget {
   const _Wordmark();
 
@@ -365,8 +561,8 @@ class _Wordmark extends StatelessWidget {
       ),
       child: Row(mainAxisSize: MainAxisSize.min, children: [
         Text('fasy',
-            style: theme.textTheme.headlineSmall?.copyWith(
-                fontWeight: FontWeight.w800, letterSpacing: 1.5)),
+            style: theme.textTheme.headlineSmall
+                ?.copyWith(fontWeight: FontWeight.w800, letterSpacing: 1.5)),
         const SizedBox(width: 8),
         Container(
             width: 10,
@@ -377,8 +573,6 @@ class _Wordmark extends StatelessWidget {
     );
   }
 }
-
-// ---------------- Über-Screen (Punkt 4) ----------------
 
 class AboutScreen extends StatelessWidget {
   const AboutScreen({super.key});
@@ -413,7 +607,7 @@ class AboutScreen extends StatelessWidget {
   }
 }
 
-// ---------------- Homescreen-Deko (Punkt 3) ----------------
+// ---------------- Homescreen-Deko ----------------
 
 class _DecoLayer extends StatelessWidget {
   const _DecoLayer();
@@ -463,212 +657,6 @@ class _DecoLayer extends StatelessWidget {
   }
 }
 
-const decoPositionLabels = {
-  'topLeft': 'Oben links',
-  'topCenter': 'Oben Mitte',
-  'topRight': 'Oben rechts',
-  'bottomLeft': 'Unten links',
-  'bottomCenter': 'Unten Mitte',
-  'bottomRight': 'Unten rechts',
-};
-const decoSizeLabels = {'s': 'klein', 'm': 'mittel', 'l': 'groß'};
-
-Future<void> saveDecos() =>
-    PhaskaDb.instance.saveHomeDecos(AppDeco.items.value);
-
-Future<void> decoAddDialog(BuildContext context) async {
-  var decoTheme = 'urwald';
-  var pos = 'topRight';
-  var size = 'm';
-  final ok = await showDialog<bool>(
-    context: context,
-    builder: (ctx) => StatefulBuilder(
-      builder: (ctx, setD) => AlertDialog(
-        title: const Text('Deko hinzufügen'),
-        content: SingleChildScrollView(
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            DropdownButtonFormField<String>(
-              initialValue: decoTheme,
-              decoration: const InputDecoration(labelText: 'Pflanze'),
-              items: [
-                for (final e in plantThemes.entries)
-                  if (e.key != 'none')
-                    DropdownMenuItem(value: e.key, child: Text(e.value)),
-              ],
-              onChanged: (v) => setD(() => decoTheme = v!),
-            ),
-            const SizedBox(height: 16),
-            Align(
-                alignment: Alignment.centerLeft,
-                child: Text('Position',
-                    style: Theme.of(ctx).textTheme.labelLarge)),
-            const SizedBox(height: 6),
-            Wrap(spacing: 6, runSpacing: 6, children: [
-              for (final e in decoPositionLabels.entries)
-                ChoiceChip(
-                    label: Text(e.value),
-                    selected: pos == e.key,
-                    onSelected: (_) => setD(() => pos = e.key)),
-            ]),
-            const SizedBox(height: 16),
-            SegmentedButton<String>(
-              segments: const [
-                ButtonSegment(value: 's', label: Text('klein')),
-                ButtonSegment(value: 'm', label: Text('mittel')),
-                ButtonSegment(value: 'l', label: Text('groß')),
-              ],
-              selected: {size},
-              onSelectionChanged: (s) => setD(() => size = s.first),
-            ),
-          ]),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Abbrechen')),
-          FilledButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Hinzufügen')),
-        ],
-      ),
-    ),
-  );
-  if (ok == true) {
-    AppDeco.items.value = [
-      ...AppDeco.items.value,
-      HomeDeco(theme: decoTheme, position: pos, size: size)
-    ];
-    await saveDecos();
-  }
-}
-
-/// NEU async (Punkt 1): lädt vorher das Einzelerfassungs-Deko-Thema.
-Future<void> _openColorSheet(BuildContext context) async {
-  var quickTheme = await PhaskaDb.instance.loadQuickTheme();
-  if (!context.mounted) return;
-  showModalBottomSheet(
-    context: context,
-    showDragHandle: true,
-    builder: (ctx) => StatefulBuilder(
-      builder: (ctx, setD) {
-        Widget section(
-                String label, int group, ValueNotifier<Color> current) =>
-            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(label, style: Theme.of(ctx).textTheme.titleSmall),
-              const SizedBox(height: 10),
-              Wrap(spacing: 10, runSpacing: 10, children: [
-                for (final c in presetColors)
-                  GestureDetector(
-                    onTap: () async {
-                      current.value = Color(c);
-                      setD(() {});
-                      await PhaskaDb.instance.saveColor(group, c);
-                      await updateHomeWidgets(); // NEU (Punkt 6)
-                    },
-                    child: CircleAvatar(
-                      backgroundColor: Color(c),
-                      radius: 20,
-                      child: current.value.toARGB32() == c
-                          ? const Icon(Icons.check, color: Colors.white)
-                          : null,
-                    ),
-                  ),
-              ]),
-            ]);
-        return SafeArea(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-            child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  section('Tag', 1, AppColors.group1),
-                  const SizedBox(height: 20),
-                  section('Migräne', 2, AppColors.group2),
-                  const SizedBox(height: 20),
-                  // NEU (Punkt 1)
-                  section('Einzelerfassung', 3, AppColors.quick),
-                  const SizedBox(height: 16),
-                  TextButton.icon(
-                    icon: const Icon(Icons.restart_alt, size: 18),
-                    label: const Text('Farben zurücksetzen'),
-                    onPressed: () async {
-                      AppColors.group1.value =
-                          const Color(kDefaultGroup1Color);
-                      AppColors.group2.value =
-                          const Color(kDefaultGroup2Color);
-                      AppColors.quick.value =
-                          const Color(kDefaultQuickColor); // NEU
-                      setD(() {});
-                      await PhaskaDb.instance.saveColor(1, kDefaultGroup1Color);
-                      await PhaskaDb.instance.saveColor(2, kDefaultGroup2Color);
-                      await PhaskaDb.instance.saveColor(3, kDefaultQuickColor);
-                      await updateHomeWidgets();
-                    },
-                  ),
-                  const Divider(height: 28),
-                  Row(children: [
-                    Text('Deko', style: Theme.of(ctx).textTheme.titleSmall),
-                    const Spacer(),
-                    TextButton.icon(
-                        onPressed: () => decoAddDialog(ctx),
-                        icon: const Icon(Icons.add, size: 18),
-                        label: const Text('Pflanze')),
-                  ]),
-                  const SizedBox(height: 6),
-                  ValueListenableBuilder<List<HomeDeco>>(
-                    valueListenable: AppDeco.items,
-                    builder: (_, decos, _) => Column(children: [
-                      if (decos.isEmpty)
-                        Text('Keine Deko aktiv.',
-                            style: Theme.of(ctx).textTheme.bodySmall),
-                      for (var i = 0; i < decos.length; i++)
-                        ListTile(
-                          dense: true,
-                          contentPadding: EdgeInsets.zero,
-                          leading:
-                              const Icon(Icons.eco_outlined, size: 20),
-                          title: Text(
-                              plantThemes[decos[i].theme] ?? decos[i].theme),
-                          subtitle: Text(
-                              '${decoPositionLabels[decos[i].position]} · '
-                              '${decoSizeLabels[decos[i].size]}'),
-                          trailing: IconButton(
-                              icon: const Icon(Icons.delete_outline,
-                                  size: 20),
-                              tooltip: 'Deko entfernen',
-                              onPressed: () async {
-                                AppDeco.items.value =
-                                    List<HomeDeco>.from(AppDeco.items.value)
-                                      ..removeAt(i);
-                                await saveDecos();
-                              }),
-                        ),
-                    ]),
-                  ),
-                  // NEU (Punkt 1): Deko der Einzelerfassungs-Slides
-                  const SizedBox(height: 16),
-                  DropdownButtonFormField<String>(
-                    initialValue: quickTheme,
-                    decoration: const InputDecoration(
-                        labelText: 'Deko der Einzelerfassungs-Slides'),
-                    items: [
-                      for (final e in plantThemes.entries)
-                        DropdownMenuItem(
-                            value: e.key, child: Text(e.value)),
-                    ],
-                    onChanged: (v) async {
-                      setD(() => quickTheme = v!);
-                      await PhaskaDb.instance.saveQuickTheme(v!);
-                    },
-                  ),
-                ]),
-          ),
-        );
-      },
-    ),
-  );
-}
-
 // ---------------- Mini-Kalender ----------------
 
 const _monthNames = [
@@ -685,7 +673,7 @@ class MiniCalendar extends StatefulWidget {
 
 class _MiniCalendarState extends State<MiniCalendar> {
   late DateTime _shown = DateTime.now();
-  Map<int, int> _mask = {}; // Tag -> Bitmaske (1=Tag, 2=Migränetag)
+  Map<int, int> _mask = {};
 
   @override
   void initState() {
@@ -716,7 +704,6 @@ class _MiniCalendarState extends State<MiniCalendar> {
         final filled = v != null && (v is! String || v.isNotEmpty);
         if (filled && d.group == 1) g1 = true;
       }
-      // Migräne nur markieren, wenn es ein Migränetag ist (Intensität > 2).
       if (g1) m2 |= 1;
       if (e.migraeneTag == 'ja') m2 |= 2;
       if (m2 > 0) mask[e.createdAt.day] = (mask[e.createdAt.day] ?? 0) | m2;
@@ -733,7 +720,7 @@ class _MiniCalendarState extends State<MiniCalendar> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final first = DateTime(_shown.year, _shown.month, 1);
-    final offset = first.weekday - 1; // Montag = 0
+    final offset = first.weekday - 1;
     final days = DateTime(_shown.year, _shown.month + 1, 0).day;
     final today = DateTime.now();
     final g1 = groupColor(1), g2 = groupColor(2);
@@ -794,18 +781,14 @@ class _MiniCalendarState extends State<MiniCalendar> {
                         end: Alignment.centerRight,
                         stops: const [.5, .5],
                         colors: [g1, g2]));
-                style =
-                    const TextStyle(color: Colors.white, fontSize: 12);
+                style = const TextStyle(color: Colors.white, fontSize: 12);
               } else if (m != 0) {
                 deco = BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: m == 1 ? g1 : g2);
-                style =
-                    const TextStyle(color: Colors.white, fontSize: 12);
+                    shape: BoxShape.circle, color: m == 1 ? g1 : g2);
+                style = const TextStyle(color: Colors.white, fontSize: 12);
               }
               if (isToday) {
-                deco = (deco ??
-                        const BoxDecoration(shape: BoxShape.circle))
+                deco = (deco ?? const BoxDecoration(shape: BoxShape.circle))
                     .copyWith(
                         shape: BoxShape.circle,
                         border: Border.all(
@@ -819,8 +802,7 @@ class _MiniCalendarState extends State<MiniCalendar> {
                   alignment: Alignment.center,
                   child: Text('$day',
                       style: style ??
-                          theme.textTheme.bodySmall
-                              ?.copyWith(fontSize: 12)),
+                          theme.textTheme.bodySmall?.copyWith(fontSize: 12)),
                 ),
               );
             },
@@ -841,6 +823,7 @@ class _HomeButton extends StatelessWidget {
   final VoidCallback onTap;
 
   const _HomeButton({
+    super.key,
     required this.color,
     required this.icon,
     required this.title,

@@ -7,6 +7,7 @@ import 'package:flutter/material.dart' show Color;
 const kDefaultGroup1Color = 0xFF3A8330; // grün – Tag
 const kDefaultGroup2Color = 0xFF7E57C2; // violett – Migräne
 const kDefaultQuickColor = 0xFF00897B; // türkis – Einzelerfassung
+const kDefaultAttackEndColor = 0xFFEF5350; // rot – „Attacke beendet“ (Punkt 7)
 
 class AppColors {
   static final ValueNotifier<Color> group1 =
@@ -15,6 +16,8 @@ class AppColors {
       ValueNotifier(const Color(kDefaultGroup2Color));
   static final ValueNotifier<Color> quick =
       ValueNotifier(const Color(kDefaultQuickColor));
+  static final ValueNotifier<Color> attackEnd =
+      ValueNotifier(const Color(kDefaultAttackEndColor)); // Punkt 7
 
   /// 'system' | 'light' | 'dark'
   static final ValueNotifier<String> themeMode = ValueNotifier('system');
@@ -26,6 +29,23 @@ Color groupColor(int group) =>
 class Repo {
   static final ValueNotifier<int> changes = ValueNotifier(0);
   static void bump() => changes.value++;
+}
+
+/// Dosis-Optionen (Punkt 10.2.1: Elvanse bis 70, Medikinet bis 80).
+const kElvanseOptions = [20, 30, 40, 50, 60, 70];
+const kMedikinetOptions = [5, 10, 15, 20, 30, 40, 50, 60, 70, 80];
+
+/// Slides des Home-Pagers (Punkt 8.3).
+const kAllSlides = ['home', 'graphs', 'quick', 'table'];
+
+class SlideCfg {
+  String id;
+  bool visible;
+  SlideCfg(this.id, {this.visible = true});
+
+  Map<String, Object?> toJson() => {'id': id, 'visible': visible};
+  factory SlideCfg.fromJson(Map<String, dynamic> m) =>
+      SlideCfg('${m['id']}', visible: m['visible'] != false);
 }
 
 /// Slug für interne Schlüssel (v. a. Unter-Eingaben).
@@ -84,7 +104,7 @@ class FieldDef {
   final int group; // 1 oder 2
   String label;
   List<FieldInput> inputs;
-  String plantTheme; // none | urwald | euphorbia | lavendel | thymian | forellen
+  String plantTheme;
   int position;
 
   FieldDef({
@@ -97,7 +117,6 @@ class FieldDef {
   }) : inputs = inputs ??
             [FieldInput(subkey: inputSlug(label), label: label, type: 'hslider')];
 
-  /// Kompatibilität zu altem Schema.
   String get type => inputs.isEmpty ? 'text' : inputs.first.type;
 
   Map<String, Object?> toMap() => {
@@ -124,7 +143,6 @@ class FieldDef {
           FieldInput.fromJson((i as Map).cast<String, dynamic>())
       ];
     } else {
-      // Altbestand: eine Eingabe aus den bisherigen Feldern rekonstruieren.
       inputs = [
         FieldInput(
           subkey: inputSlug(label),
@@ -149,7 +167,7 @@ class FieldDef {
 // ---------------- Graphen ----------------
 
 class GraphSeries {
-  String key; // 'wohlbefinden' | 'innere_unruhe' | ... | 'defId::subkey'
+  String key;
   String label;
   int color;
   GraphSeries({required this.key, required this.label, required this.color});
@@ -166,7 +184,7 @@ class GraphSeries {
 class GraphDef {
   final String id;
   String title;
-  String type; // line | bar | points
+  String type;
   int rangeDays;
   List<GraphSeries> series;
   int position;
@@ -216,6 +234,7 @@ class PhaskaEntry {
   int? wohlbefinden;
   double? schlafStunden;
   int? elvanseMg;
+  String? elvanseZeit; // Punkt 5: Uhrzeit auch für Elvanse
   double? innereUnruhe;
   int? medikinetMg;
   String? medikinetZeit;
@@ -229,7 +248,6 @@ class PhaskaEntry {
   String? begleitsymptome;
   String? notizen;
 
-  /// Eigene Datenpunkte: FieldDef.id -> Map<Input.subkey, Wert> (oder alt: direkter Wert).
   Map<String, Object?> custom;
 
   PhaskaEntry({
@@ -238,6 +256,7 @@ class PhaskaEntry {
     this.wohlbefinden,
     this.schlafStunden,
     this.elvanseMg,
+    this.elvanseZeit,
     this.innereUnruhe,
     this.medikinetMg,
     this.medikinetZeit,
@@ -260,6 +279,7 @@ class PhaskaEntry {
       wohlbefinden != null ||
       schlafStunden != null ||
       elvanseMg != null ||
+      elvanseZeit != null ||
       innereUnruhe != null ||
       medikinetMg != null;
 
@@ -277,6 +297,7 @@ class PhaskaEntry {
         'wohlbefinden': wohlbefinden,
         'schlaf_stunden': schlafStunden,
         'elvanse_mg': elvanseMg,
+        'elvanse_zeit': elvanseZeit, // Punkt 5
         'innere_unruhe': innereUnruhe,
         'medikinet_mg': medikinetMg,
         'medikinet_zeit': medikinetZeit,
@@ -298,6 +319,7 @@ class PhaskaEntry {
         wohlbefinden: m['wohlbefinden'] as int?,
         schlafStunden: (m['schlaf_stunden'] as num?)?.toDouble(),
         elvanseMg: m['elvanse_mg'] as int?,
+        elvanseZeit: m['elvanse_zeit'] as String?, // Punkt 5
         innereUnruhe: (m['innere_unruhe'] as num?)?.toDouble(),
         medikinetMg: m['medikinet_mg'] as int?,
         medikinetZeit: m['medikinet_zeit'] as String?,
@@ -314,12 +336,11 @@ class PhaskaEntry {
       );
 }
 
-// ---------------- Custom-Werte (mehrere Eingaben je Punkt) ----------------
+// ---------------- Custom-Werte ----------------
 
 Object? customSubValue(PhaskaEntry e, FieldDef d, FieldInput inp) {
   final v = e.custom[d.id];
   if (v is Map) return v[inp.subkey];
-  // Altbestand: direkter Skalar unter der Def-ID
   if (v != null && d.inputs.isNotEmpty && inp.subkey == d.inputs.first.subkey) {
     return v;
   }
@@ -335,13 +356,12 @@ void setCustomSubValue(
       map['${en.key}'] = en.value;
     }
   } else if (cur != null && d.inputs.isNotEmpty) {
-    map[d.inputs.first.subkey] = cur; // Altbestand übernehmen
+    map[d.inputs.first.subkey] = cur;
   }
   map[inp.subkey] = value;
   e.custom[d.id] = map;
 }
 
-/// 7.5 -> "7,5" · 7.0 -> "7"
 String fmtDe(num v) {
   final d = v.toDouble();
   if (d == d.roundToDouble()) return d.round().toString();
@@ -357,11 +377,11 @@ String fmtOne(Object? v) {
 
 String fmtCustomDisplay(Object? v) => fmtOne(v);
 
-// ---------------- Einzelerfassung (Schnellmessungen) ----------------
+// ---------------- Einzelerfassung ----------------
 
 class QuickValue {
   int? id;
-  String defKey; // 'wohlbefinden' | 'defId::subkey'
+  String defKey;
   String label;
   double value;
   DateTime createdAt;
@@ -390,7 +410,6 @@ class QuickValue {
       );
 }
 
-/// Mess-Schlüssel: eingebaute Werte + eigene Unterwerte ('defId::subkey').
 const builtinValueLabels = <String, String>{
   'wohlbefinden': 'Wohlbefinden',
   'schlaf': 'Schlaf (h)',
@@ -400,8 +419,7 @@ const builtinValueLabels = <String, String>{
   'intensitaet': 'Migräne-Intensität',
 };
 
-/// Schritt-ID -> Mess-Schlüssel (null = nicht numerisch messbar).
-String? quickKeyForStep(String id) => switch (id) {
+String? builtinValueKeyOf(String id) => switch (id) {
       'wohlbefinden' => 'wohlbefinden',
       'schlaf' => 'schlaf',
       'elvanse' => 'elvanse',
@@ -410,6 +428,9 @@ String? quickKeyForStep(String id) => switch (id) {
       'intensitaet' => 'intensitaet',
       _ => null,
     };
+
+// Abwärtskompatibler Name (wird in edit_schema/quick-Capture genutzt).
+String? quickKeyForStep(String id) => builtinValueKeyOf(id);
 
 String keyLabel(String key, Map<String, FieldDef> defsById) {
   if (builtinValueLabels.containsKey(key)) return builtinValueLabels[key]!;
@@ -427,7 +448,6 @@ String keyLabel(String key, Map<String, FieldDef> defsById) {
   return key;
 }
 
-/// Skalenmaximum eines Mess-Schlüssels (für die 0–100-%-Normalisierung).
 double keyMax(String key, Map<String, FieldDef> defsById) {
   switch (key) {
     case 'wohlbefinden':
@@ -435,11 +455,11 @@ double keyMax(String key, Map<String, FieldDef> defsById) {
     case 'schlaf':
       return 12;
     case 'elvanse':
-      return 50;
+      return 70; // Punkt 10.2.1
     case 'innere_unruhe':
       return 10;
     case 'medikinet':
-      return 20;
+      return 80; // Punkt 10.2.1
     case 'intensitaet':
       return 10;
   }
@@ -489,7 +509,6 @@ int _ci(double v, int min, int max) {
   return r < min ? min : (r > max ? max : r);
 }
 
-/// Schreibt einen (Durchschnitts-)Wert zurück in einen Tageseintrag.
 void setEntryValueForKey(
     PhaskaEntry e, String key, double v, Map<String, FieldDef> defsById) {
   switch (key) {
@@ -523,18 +542,46 @@ void setEntryValueForKey(
   }
 }
 
+/// Setzt einen Schlüssel am Tageseintrag auf „nicht erfasst" zurück
+/// (Punkt 2: Bereinigung zurückgeschriebener Durchschnitte).
+void clearEntryValueForKey(
+    PhaskaEntry e, String key, Map<String, FieldDef> defsById) {
+  switch (key) {
+    case 'wohlbefinden':
+      e.wohlbefinden = null;
+      return;
+    case 'schlaf':
+      e.schlafStunden = null;
+      return;
+    case 'elvanse':
+      e.elvanseMg = null;
+      return;
+    case 'innere_unruhe':
+      e.innereUnruhe = null;
+      return;
+    case 'medikinet':
+      e.medikinetMg = null;
+      return;
+    case 'intensitaet':
+      e.migraeneIntensitaet = null;
+      return;
+  }
+  final p = key.split('::');
+  if (p.length == 2) {
+    final d = defsById[p[0]];
+    final inp = d?.inputs.where((i) => i.subkey == p[1]).firstOrNull;
+    if (d != null && inp != null) setCustomSubValue(e, d, inp, null);
+  }
+}
+
 // ---------------- Homescreen-Deko ----------------
 
 class HomeDeco {
-  String theme; // urwald | euphorbia | lavendel | thymian | forellen
-  String position; // topLeft | topCenter | topRight | bottomLeft | bottomCenter | bottomRight
-  String size; // s | m | l
+  String theme;
+  String position;
+  String size;
 
-  HomeDeco({
-    required this.theme,
-    this.position = 'topRight',
-    this.size = 'm',
-  });
+  HomeDeco({required this.theme, this.position = 'topRight', this.size = 'm'});
 
   Map<String, Object?> toJson() =>
       {'theme': theme, 'position': position, 'size': size};
